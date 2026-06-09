@@ -43,7 +43,7 @@ export function ThreadListSidebar({ ...props }: React.ComponentProps<typeof Side
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild>
               <a
-                href="https://github.com/assistant-ui/assistant-ui"
+                href="https://github.com/jcdiv47/text-to-sql"
                 target="_blank"
                 rel="noopener noreferrer"
               >

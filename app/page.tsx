@@ -40,10 +40,10 @@ export default function Home() {
 
       <section className="flex flex-1 items-center justify-center px-6">
         <div className="mx-auto flex max-w-2xl flex-col items-center gap-6 text-center">
-          <h1 className="text-3xl font-semibold tracking-tight">Assistant UI + Clerk Starter</h1>
+          <h1 className="text-3xl font-semibold tracking-tight">Chat with Your Database</h1>
 
           <p className="text-muted-foreground max-w-prose">
-            A starter template for assistant-ui + assistant-cloud with Clerk for auth.
+            Chat with Text-to-SQL agent to learn about your database.
           </p>
 
           <div className="mt-2">
