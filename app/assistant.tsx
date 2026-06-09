@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { AssistantRuntimeProvider, AssistantCloud } from "@assistant-ui/react";
+import { AssistantRuntimeProvider, AssistantCloud, useAuiState } from "@assistant-ui/react";
 import { useChatRuntime, AssistantChatTransport } from "@assistant-ui/react-ai-sdk";
 import { lastAssistantMessageIsCompleteWithToolCalls } from "ai";
 import { Thread } from "@/components/assistant-ui/thread";
@@ -11,7 +11,6 @@ import {
   Breadcrumb,
   BreadcrumbList,
   BreadcrumbItem,
-  BreadcrumbLink,
   BreadcrumbSeparator,
   BreadcrumbPage,
 } from "@/components/ui/breadcrumb";
@@ -54,20 +53,14 @@ export const Assistant = () => {
             <header className="flex h-16 shrink-0 items-center gap-2 border-b px-4">
               <SidebarTrigger />
               <Separator orientation="vertical" className="border-border mr-2 h-4" />
-              <Breadcrumb>
-                <BreadcrumbList>
-                  <BreadcrumbItem className="hidden md:block">
-                    <BreadcrumbLink
-                      href="https://www.assistant-ui.com/docs/getting-started"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      Build Your Own ChatGPT UX
-                    </BreadcrumbLink>
+              <Breadcrumb className="min-w-0">
+                <BreadcrumbList className="flex-nowrap">
+                  <BreadcrumbItem className="hidden shrink-0 md:block">
+                    <span>Chat with Your Database</span>
                   </BreadcrumbItem>
                   <BreadcrumbSeparator className="hidden md:block" />
-                  <BreadcrumbItem>
-                    <BreadcrumbPage>Starter Template</BreadcrumbPage>
+                  <BreadcrumbItem className="min-w-0">
+                    <CurrentConversationBreadcrumbPage />
                   </BreadcrumbItem>
                 </BreadcrumbList>
               </Breadcrumb>
@@ -89,4 +82,10 @@ export const Assistant = () => {
       </SidebarProvider>
     </AssistantRuntimeProvider>
   );
+};
+
+const CurrentConversationBreadcrumbPage = () => {
+  const title = useAuiState((state) => state.threadListItem.title?.trim() || "New Chat");
+
+  return <BreadcrumbPage className="block max-w-[45vw] truncate">{title}</BreadcrumbPage>;
 };
