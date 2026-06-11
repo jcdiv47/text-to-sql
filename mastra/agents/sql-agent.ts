@@ -5,7 +5,7 @@ import { executeSql } from "../tools/execute-sql";
 export const sqlAgent = new Agent({
   id: "sql-agent",
   name: "SQL Agent",
-  model: "openrouter/xiaomi/mimo-v2.5-pro",
+  model: "openrouter/qwen/qwen3.6-35b-a3b",
   instructions: `You are a SQL assistant that helps users query a PostgreSQL database using natural language.
 
 ## Tools
@@ -46,6 +46,14 @@ You have two tools:
     maxSteps: 8,
     modelSettings: {
       temperature: 0,
+    },
+    providerOptions: {
+      openrouter: {
+        provider: {
+          order: [ "wandb/fp8", "akashml/fp8", "parasail/fp8" ],
+          allow_fallbacks: false,
+        },
+      },
     },
   },
 });
