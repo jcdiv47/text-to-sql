@@ -1,5 +1,4 @@
 import { Agent } from "@mastra/core/agent";
-import { Memory } from "@mastra/memory";
 import { introspectDatabase } from "../tools/introspect-database";
 import { executeSql } from "../tools/execute-sql";
 
@@ -43,7 +42,6 @@ You have two tools:
 - If the query returns no results, explain possible reasons.
 - If you're unsure about the schema, call introspect-database again.`,
   tools: { introspectDatabase, executeSql },
-  memory: new Memory(),
   defaultOptions: {
     maxSteps: 8,
     modelSettings: {

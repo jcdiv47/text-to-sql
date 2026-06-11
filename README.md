@@ -1,6 +1,6 @@
 # Text-to-SQL Assistant
 
-This is a merged Next.js app with [assistant-ui](https://assistant-ui.com), [Assistant Cloud](https://cloud.assistant-ui.com), [Clerk](https://clerk.com), and an in-process Mastra text-to-SQL agent.
+This is a merged Next.js app with [assistant-ui](https://assistant-ui.com), [Assistant Cloud](https://cloud.assistant-ui.com), [Clerk](https://clerk.com), [Langfuse](https://langfuse.com), and an in-process Mastra text-to-SQL agent.
 
 ## Getting Started
 
@@ -44,6 +44,8 @@ cp .env.example .env.local   # macOS/Linux
 copy .env.example .env.local # or on Windows
 ```
 
+Set the Assistant Cloud URL, Clerk keys, OpenRouter key, PostgreSQL connection, and Langfuse tracing keys. The Mastra agent does not currently use Mastra Memory or a Mastra storage adapter; Assistant Cloud remains responsible for assistant-ui thread persistence.
+
 ### 4. Install Dependencies
 
 ```bash
@@ -72,7 +74,7 @@ You can start customizing the UI by modifying components in the `components/assi
 - `app/chat/page.tsx` — Protected chat page (Assistant UI)
 - `app/assistant.tsx` — Assistant runtime setup (Assistant Cloud + Clerk token)
 - `app/api/chat/route.ts` — Chat API endpoint that streams responses from the Mastra SQL agent
-- `mastra/` — Mastra SQL agent, PostgreSQL tools, and persistent storage config
+- `mastra/` — Mastra SQL agent, PostgreSQL tools, and Langfuse tracing config
 - `app/sign-in/[[...sign-in]]/page.tsx` — Embedded Clerk sign-in
 - `app/sign-up/[[...sign-up]]/page.tsx` — Embedded Clerk sign-up
 - `app/layout.tsx` — App wrapper with `ClerkProvider` (embedded routes configured)
