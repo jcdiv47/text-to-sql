@@ -1,7 +1,7 @@
 "use client";
 
 import "@assistant-ui/react-markdown/styles/dot.css";
-
+import { HighlightedSql } from "@/components/assistant-ui/sql-tools";
 import {
   type CodeHeaderProps,
   MarkdownTextPrimitive,
@@ -216,8 +216,22 @@ const defaultComponents = memoizeMarkdownComponents({
       {...props}
     />
   ),
-  code: function Code({ className, ...props }) {
+  code: function Code({ className, children, ...props }) {
     const isCodeBlock = useIsMarkdownCodeBlock();
+    const language = /language-(\w+)/.exec(className ?? "")?.[1]?.toLowerCase();
+
+    if (
+      isCodeBlock &&
+      typeof children === "string" &&
+      (language === "sql" || language === "postgresql" || language === "postgres")
+    ) {
+      return (
+        <code className={className} {...props}>
+          <HighlightedSql sql={children} />
+        </code>
+      );
+    }
+
     return (
       <code
         className={cn(
@@ -226,7 +240,9 @@ const defaultComponents = memoizeMarkdownComponents({
           className,
         )}
         {...props}
-      />
+      >
+        {children}
+      </code>
     );
   },
   CodeHeader,

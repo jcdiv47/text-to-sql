@@ -1,4 +1,13 @@
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   AuiIf,
@@ -7,7 +16,7 @@ import {
   ThreadListPrimitive,
 } from "@assistant-ui/react";
 import { ArchiveIcon, MoreHorizontalIcon, PlusIcon, TrashIcon } from "lucide-react";
-import type { FC } from "react";
+import { useState, type FC } from "react";
 
 export const ThreadList: FC = () => {
   return (
@@ -68,36 +77,60 @@ const ThreadListItem: FC = () => {
 };
 
 const ThreadListItemMore: FC = () => {
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+
   return (
-    <ThreadListItemMorePrimitive.Root>
-      <ThreadListItemMorePrimitive.Trigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="aui-thread-list-item-more data-[state=open]:bg-accent me-2 size-7 p-0 opacity-0 transition-opacity group-hover:opacity-100 group-data-active:opacity-100 data-[state=open]:opacity-100"
+    <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+      <ThreadListItemMorePrimitive.Root>
+        <ThreadListItemMorePrimitive.Trigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="aui-thread-list-item-more data-[state=open]:bg-accent me-2 size-7 p-0 opacity-0 transition-opacity group-hover:opacity-100 group-data-active:opacity-100 data-[state=open]:opacity-100"
+          >
+            <MoreHorizontalIcon className="size-4" />
+            <span className="sr-only">More options</span>
+          </Button>
+        </ThreadListItemMorePrimitive.Trigger>
+        <ThreadListItemMorePrimitive.Content
+          side="bottom"
+          align="start"
+          className="aui-thread-list-item-more-content bg-popover text-popover-foreground z-50 min-w-32 overflow-hidden rounded-md border p-1 shadow-md"
         >
-          <MoreHorizontalIcon className="size-4" />
-          <span className="sr-only">More options</span>
-        </Button>
-      </ThreadListItemMorePrimitive.Trigger>
-      <ThreadListItemMorePrimitive.Content
-        side="bottom"
-        align="start"
-        className="aui-thread-list-item-more-content bg-popover text-popover-foreground z-50 min-w-32 overflow-hidden rounded-md border p-1 shadow-md"
-      >
-        <ThreadListItemPrimitive.Archive asChild>
-          <ThreadListItemMorePrimitive.Item className="aui-thread-list-item-more-item hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none select-none">
-            <ArchiveIcon className="size-4" />
-            Archive
-          </ThreadListItemMorePrimitive.Item>
-        </ThreadListItemPrimitive.Archive>
-        <ThreadListItemPrimitive.Delete asChild>
-          <ThreadListItemMorePrimitive.Item className="aui-thread-list-item-more-item text-destructive hover:bg-destructive/10 hover:text-destructive focus:bg-destructive/10 focus:text-destructive flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none select-none">
+          <ThreadListItemPrimitive.Archive asChild>
+            <ThreadListItemMorePrimitive.Item className="aui-thread-list-item-more-item hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none select-none">
+              <ArchiveIcon className="size-4" />
+              Archive
+            </ThreadListItemMorePrimitive.Item>
+          </ThreadListItemPrimitive.Archive>
+          <ThreadListItemMorePrimitive.Item
+            className="aui-thread-list-item-more-item text-destructive hover:bg-destructive/10 hover:text-destructive focus:bg-destructive/10 focus:text-destructive flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none select-none"
+            onSelect={() => setDeleteDialogOpen(true)}
+          >
             <TrashIcon className="size-4" />
             Delete
           </ThreadListItemMorePrimitive.Item>
-        </ThreadListItemPrimitive.Delete>
-      </ThreadListItemMorePrimitive.Content>
-    </ThreadListItemMorePrimitive.Root>
+        </ThreadListItemMorePrimitive.Content>
+      </ThreadListItemMorePrimitive.Root>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete this session?</DialogTitle>
+          <DialogDescription>
+            This will permanently delete the session and its messages. This action cannot be undone.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button variant="outline">Cancel</Button>
+          </DialogClose>
+          <ThreadListItemPrimitive.Delete asChild>
+            <Button variant="destructive" onClick={() => setDeleteDialogOpen(false)}>
+              <TrashIcon className="size-4" />
+              Delete session
+            </Button>
+          </ThreadListItemPrimitive.Delete>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 };
