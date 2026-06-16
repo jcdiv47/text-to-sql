@@ -58,7 +58,7 @@ You have three tool capabilities:
   defaultOptions: {
     maxSteps: 8,
     modelSettings: {
-      temperature: 0,
+      temperature: 0.7,
     },
     providerOptions: {
       openrouter: {
