@@ -5,10 +5,6 @@ import { Observability, SamplingStrategyType, SensitiveDataFilter } from "@mastr
 import { sqlAgent } from "./agents/sql-agent";
 import { sqlWorkflow } from "./workflows/sql-workflow";
 
-type FlushableObservability = Observability & {
-  flush: () => Promise<void>;
-};
-
 const observability = new Observability({
   configs: {
     default: {
@@ -26,7 +22,11 @@ const observability = new Observability({
   },
 });
 
-export const flushMastraObservability = () => (observability as FlushableObservability).flush();
+export const flushMastraObservability = async () => {
+  await Promise.all(
+    Array.from(observability.listInstances().values(), (instance) => instance.flush()),
+  );
+};
 
 export const mastra = new Mastra({
   agents: { sqlAgent },
