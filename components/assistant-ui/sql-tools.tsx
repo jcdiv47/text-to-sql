@@ -1,30 +1,60 @@
 "use client";
 
-import { useMemo, type FC, type ReactNode } from "react";
+import { useMemo, useState, type FC, type ReactNode } from "react";
 import {
   CheckIcon,
   ChevronDownIcon,
   DatabaseIcon,
+  HelpCircleIcon,
   LoaderIcon,
   TableIcon,
   WrenchIcon,
   XCircleIcon,
 } from "lucide-react";
-import type {
-  ToolCallMessagePartComponent,
-  ToolCallMessagePartProps,
-  ToolCallMessagePartStatus,
-} from "@assistant-ui/react";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+import { getToolOrDynamicToolName, type DynamicToolUIPart, type ToolUIPart } from "ai";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ChainOfThoughtStep } from "@/components/assistant-ui/chain-of-thought";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
+import { useChatActions } from "@/components/assistant-ui/chat-context";
 
 const ANIMATION_DURATION = 200;
+
+/* ------------------------------------------------------------------ */
+/* AI SDK tool part helpers                                            */
+/* ------------------------------------------------------------------ */
+
+export type AnyToolUIPart = ToolUIPart | DynamicToolUIPart;
+type ToolState = ToolUIPart["state"];
+
+/** Normalizes a tool name so kebab (`clarify-request`) and camel (`clarifyRequest`) match. */
+const normalizeToolName = (name: string) => name.replace(/[-_]/g, "").toLowerCase();
+
+const toolIsRunning = (state: ToolState) =>
+  state === "input-streaming" || state === "input-available";
+
+type ToolCardProps = {
+  state: ToolState;
+  input?: unknown;
+  output?: unknown;
+  errorText?: string;
+};
+
+const toToolCardProps = (part: AnyToolUIPart): ToolCardProps => {
+  const p = part as { state: ToolState; input?: unknown; output?: unknown; errorText?: string };
+  return { state: p.state, input: p.input, output: p.output, errorText: p.errorText };
+};
+
+export const isClarifyToolPart = (part: AnyToolUIPart): boolean =>
+  normalizeToolName(getToolOrDynamicToolName(part)) === "clarifyrequest";
+
+/** True when a clarify call actually asks the user something (needs an answer). */
+export const isClarifyAskPart = (part: AnyToolUIPart): boolean => {
+  if (!isClarifyToolPart(part)) return false;
+  const output = (part as { output?: ClarifyResult }).output;
+  return Boolean(output?.needsClarification && (output.questions?.length ?? 0) > 0);
+};
 
 /* ------------------------------------------------------------------ */
 /* SQL syntax highlighting                                              */
@@ -81,28 +111,10 @@ export const HighlightedSql: FC<{ sql: string; className?: string }> = ({ sql, c
   );
 };
 
-/**
- * Best-effort extraction of the `query` arg while args are still streaming
- * (argsText is partial JSON until the tool call finishes).
- */
-function extractQuery(args: unknown, argsText: string | undefined): string {
-  const direct = (args as { query?: unknown } | undefined)?.query;
-  if (typeof direct === "string" && direct.length > 0) return direct;
-  if (!argsText) return "";
-  try {
-    const parsed = JSON.parse(argsText) as { query?: string };
-    if (typeof parsed.query === "string") return parsed.query;
-  } catch {
-    const m = /"query"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(argsText);
-    if (m) {
-      return m[1]
-        .replace(/\\n/g, "\n")
-        .replace(/\\t/g, "\t")
-        .replace(/\\"/g, '"')
-        .replace(/\\\\/g, "\\");
-    }
-  }
-  return "";
+/** Reads the `query` arg from the tool input (partial object while streaming). */
+function extractQuery(input: unknown): string {
+  const query = (input as { query?: unknown } | undefined)?.query;
+  return typeof query === "string" ? query : "";
 }
 
 /* ------------------------------------------------------------------ */
@@ -116,7 +128,7 @@ const ToolMarkerIcon: FC<{ children: ReactNode }> = ({ children }) => (
 );
 
 type TimelineToolCardProps = {
-  status?: ToolCallMessagePartStatus;
+  state: ToolState;
   /** mono one-line preview shown in the collapsed header */
   preview: ReactNode;
   /** right-aligned mono metadata, e.g. "1 row" — hidden while running */
@@ -127,11 +139,11 @@ type TimelineToolCardProps = {
 /**
  * The collapsible card body of a tool step. Spinner + shimmering "Running…"
  * while the tool executes; check / error icon + metadata once settled.
+ * The error message itself is rendered by callers via {@link ToolError}.
  */
-const TimelineToolCard: FC<TimelineToolCardProps> = ({ status, preview, meta, children }) => {
-  const statusType = status?.type ?? "complete";
-  const isRunning = statusType === "running";
-  const isError = statusType === "incomplete";
+const TimelineToolCard: FC<TimelineToolCardProps> = ({ state, preview, meta, children }) => {
+  const running = toolIsRunning(state);
+  const isError = state === "output-error";
 
   return (
     <Collapsible
@@ -143,18 +155,27 @@ const TimelineToolCard: FC<TimelineToolCardProps> = ({ status, preview, meta, ch
         data-slot="sql-tool-trigger"
         className="aui-sql-tool-trigger group/trigger hover:bg-muted/40 flex w-full items-center gap-2.5 px-3 py-2 text-start transition-colors"
       >
-        {isRunning ? (
-          <LoaderIcon className="text-muted-foreground size-3.5 shrink-0 animate-spin" aria-hidden />
+        {running ? (
+          <LoaderIcon
+            className="text-muted-foreground size-3.5 shrink-0 animate-spin"
+            aria-hidden
+          />
         ) : isError ? (
           <XCircleIcon className="text-destructive size-3.5 shrink-0" aria-hidden />
         ) : (
-          <CheckIcon className="size-3.5 shrink-0 text-[oklch(0.55_0.15_162)] dark:text-[oklch(0.7_0.17_162)]" aria-hidden />
+          <CheckIcon
+            className="size-3.5 shrink-0 text-[oklch(0.55_0.15_162)] dark:text-[oklch(0.7_0.17_162)]"
+            aria-hidden
+          />
         )}
         <span className="min-w-0 flex-1 truncate font-mono text-xs">{preview}</span>
-        {isRunning ? (
+        {running ? (
           <span className="relative shrink-0 text-[11px] font-medium">
             <span className="text-muted-foreground">Running…</span>
-            <span aria-hidden className="shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none">
+            <span
+              aria-hidden
+              className="shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none"
+            >
               Running…
             </span>
           </span>
@@ -189,10 +210,9 @@ const TimelineToolCard: FC<TimelineToolCardProps> = ({ status, preview, meta, ch
   );
 };
 
-const ToolError: FC<{ status?: ToolCallMessagePartStatus }> = ({ status }) => {
-  if (status?.type !== "incomplete" || !status.error) return null;
-  const text = typeof status.error === "string" ? status.error : JSON.stringify(status.error);
-  return <p className="text-destructive mb-2 text-xs">{text}</p>;
+const ToolError: FC<{ state: ToolState; errorText?: string }> = ({ state, errorText }) => {
+  if (state !== "output-error" || !errorText) return null;
+  return <p className="text-destructive mb-2 text-xs">{errorText}</p>;
 };
 
 /* ------------------------------------------------------------------ */
@@ -262,11 +282,11 @@ const SqlResultTable: FC<{ rows: Record<string, unknown>[] }> = ({ rows }) => {
   );
 };
 
-export const ExecuteSqlTool: ToolCallMessagePartComponent = ({ args, argsText, result, status }) => {
-  const query = extractQuery(args, argsText);
+const ExecuteSqlTool: FC<ToolCardProps> = ({ state, input, output, errorText }) => {
+  const query = extractQuery(input);
   const flat = query.replace(/\s+/g, " ").trim();
-  const typedResult = (result ?? undefined) as ExecuteSqlResult | undefined;
-  const rowCount = typedResult?.rowCount ?? typedResult?.rows?.length;
+  const result = output as ExecuteSqlResult | undefined;
+  const rowCount = result?.rowCount ?? result?.rows?.length;
   const meta =
     rowCount !== undefined ? `${rowCount} ${rowCount === 1 ? "row" : "rows"}` : undefined;
 
@@ -279,17 +299,17 @@ export const ExecuteSqlTool: ToolCallMessagePartComponent = ({ args, argsText, r
       }
     >
       <TimelineToolCard
-        status={status}
+        state={state}
         meta={meta}
         preview={flat ? <HighlightedSql sql={flat} /> : "executeSql"}
       >
-        <ToolError status={status} />
+        <ToolError state={state} errorText={errorText} />
         {query && (
           <pre className="bg-background/60 border-border/60 overflow-x-auto rounded-lg border px-3.5 py-2.5 font-mono text-xs leading-[1.8] whitespace-pre-wrap">
             <HighlightedSql sql={query} />
           </pre>
         )}
-        {typedResult?.rows && <SqlResultTable rows={typedResult.rows} />}
+        {result?.rows && <SqlResultTable rows={result.rows} />}
       </TimelineToolCard>
     </ChainOfThoughtStep>
   );
@@ -299,15 +319,11 @@ export const ExecuteSqlTool: ToolCallMessagePartComponent = ({ args, argsText, r
 /* introspectDatabase                                                   */
 /* ------------------------------------------------------------------ */
 
-type IntrospectResult = { schema?: string };
-
-export const IntrospectDatabaseTool: ToolCallMessagePartComponent = ({ result, status }) => {
-  const schema = ((result ?? undefined) as IntrospectResult | undefined)?.schema;
+const IntrospectDatabaseTool: FC<ToolCardProps> = ({ state, output, errorText }) => {
+  const schema = (output as { schema?: string } | undefined)?.schema;
   const tableCount = schema ? (schema.match(/(^|\n)## /g) ?? []).length : undefined;
   const meta =
-    tableCount !== undefined
-      ? `${tableCount} ${tableCount === 1 ? "table" : "tables"}`
-      : undefined;
+    tableCount !== undefined ? `${tableCount} ${tableCount === 1 ? "table" : "tables"}` : undefined;
 
   return (
     <ChainOfThoughtStep
@@ -317,8 +333,8 @@ export const IntrospectDatabaseTool: ToolCallMessagePartComponent = ({ result, s
         </ToolMarkerIcon>
       }
     >
-      <TimelineToolCard status={status} meta={meta} preview="introspectDatabase">
-        <ToolError status={status} />
+      <TimelineToolCard state={state} meta={meta} preview="introspectDatabase">
+        <ToolError state={state} errorText={errorText} />
         {schema ? (
           <pre className="bg-background/60 border-border/60 max-h-64 overflow-auto rounded-lg border px-3.5 py-2.5 font-mono text-[11px] leading-[1.7] whitespace-pre-wrap">
             {schema}
@@ -332,20 +348,155 @@ export const IntrospectDatabaseTool: ToolCallMessagePartComponent = ({ result, s
 };
 
 /* ------------------------------------------------------------------ */
-/* Dispatcher — use this in thread.tsx for the `tool-call` part case    */
+/* clarifyRequest                                                       */
+/* ------------------------------------------------------------------ */
+
+type ClarifyChoice = { id: string; label: string; description?: string };
+type ClarifyQuestion = {
+  id: string;
+  type: "single_choice" | "multi_choice";
+  question: string;
+  choices: ClarifyChoice[];
+};
+type ClarifyResult = { needsClarification?: boolean; questions?: ClarifyQuestion[] };
+
+/**
+ * Renders the clarify-request tool's questions as clickable single/multi
+ * choice options. On submit, the selection is sent back to the thread as a
+ * follow-up message, which resumes the agent so it can generate the SQL.
+ */
+const ClarifyRequestTool: FC<ToolCardProps> = ({ state, output }) => {
+  const { sendMessage, isRunning } = useChatActions();
+  const questions = (output as ClarifyResult | undefined)?.questions ?? [];
+  const [answers, setAnswers] = useState<Record<string, string[]>>({});
+  const [submitted, setSubmitted] = useState(false);
+
+  const toggle = (q: ClarifyQuestion, choiceId: string) =>
+    setAnswers((prev) => {
+      const cur = prev[q.id] ?? [];
+      if (q.type === "single_choice") return { ...prev, [q.id]: [choiceId] };
+      return {
+        ...prev,
+        [q.id]: cur.includes(choiceId) ? cur.filter((c) => c !== choiceId) : [...cur, choiceId],
+      };
+    });
+
+  const allAnswered =
+    questions.length > 0 && questions.every((q) => (answers[q.id]?.length ?? 0) > 0);
+
+  const submit = () => {
+    if (submitted || !allAnswered) return;
+    setSubmitted(true);
+    // Concise confirmation: a "✓ 已选择" header + one line of chosen labels per
+    // question (in order). The agent maps each line to its question via the
+    // clarify tool result that immediately precedes this message in context.
+    const lines = questions.map((q) =>
+      (answers[q.id] ?? []).map((id) => q.choices.find((c) => c.id === id)?.label ?? id).join("、"),
+    );
+    sendMessage(`✓ 已选择\n${lines.join("\n")}`);
+  };
+
+  // No questions yet: a compact hint while the clarify agent drafts, or
+  // nothing once it decides no clarification is needed.
+  if (questions.length === 0) {
+    if (toolIsRunning(state)) {
+      return (
+        <div className="text-muted-foreground my-2 flex items-center gap-2 text-sm">
+          <LoaderIcon className="size-4 shrink-0 animate-spin" aria-hidden />
+          <span>正在准备澄清选项…</span>
+        </div>
+      );
+    }
+    return null;
+  }
+
+  return (
+    <div className="border-border/80 bg-muted/30 my-3 w-full space-y-4 rounded-xl border p-4">
+      <div className="text-muted-foreground flex items-center gap-2 text-xs font-medium">
+        <HelpCircleIcon className="size-3.5 shrink-0" />
+        <span>需要你确认</span>
+      </div>
+      {questions.map((q) => {
+        const multi = q.type === "multi_choice";
+        return (
+          <div key={q.id} className="space-y-2">
+            <p className="text-sm font-medium">
+              {q.question}
+              <span className="text-muted-foreground ml-1.5 text-xs font-normal">
+                {multi ? "（可多选）" : "（单选）"}
+              </span>
+            </p>
+            <div className="flex flex-col gap-1.5">
+              {q.choices.map((c) => {
+                const selected = (answers[q.id] ?? []).includes(c.id);
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    disabled={submitted}
+                    onClick={() => toggle(q, c.id)}
+                    className={cn(
+                      "flex items-start gap-2.5 rounded-lg border px-3 py-2 text-start text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                      selected
+                        ? "border-primary bg-primary/10"
+                        : "border-border/60 hover:bg-muted/50",
+                    )}
+                  >
+                    <span
+                      aria-hidden
+                      className={cn(
+                        "mt-0.5 flex size-4 shrink-0 items-center justify-center border transition-colors",
+                        multi ? "rounded-[5px]" : "rounded-full",
+                        selected
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-muted-foreground/50",
+                      )}
+                    >
+                      {selected &&
+                        (multi ? (
+                          <CheckIcon className="size-3" />
+                        ) : (
+                          <span className="bg-primary-foreground size-1.5 rounded-full" />
+                        ))}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="font-medium">{c.label}</span>
+                      {c.description && (
+                        <span className="text-muted-foreground block text-xs">{c.description}</span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+      <Button size="sm" disabled={!allAnswered || submitted || isRunning} onClick={submit}>
+        {submitted ? "已提交" : "确认选择"}
+      </Button>
+    </div>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* Dispatcher — routes an AI SDK tool part to its renderer              */
 /* ------------------------------------------------------------------ */
 
 /**
  * Routes the SQL agent's tools to their dedicated timeline cards, and any
  * other tool to the standard ToolFallback wrapped as a timeline step.
  */
-export const TimelineToolCall: FC<ToolCallMessagePartProps> = (props) => {
-  switch (props.toolName) {
-    case "executeSql":
-    case "execute-sql":
+export const ToolPart: FC<{ part: AnyToolUIPart }> = ({ part }) => {
+  const name = getToolOrDynamicToolName(part);
+  const props = toToolCardProps(part);
+
+  switch (normalizeToolName(name)) {
+    case "clarifyrequest":
+      return <ClarifyRequestTool {...props} />;
+    case "executesql":
       return <ExecuteSqlTool {...props} />;
-    case "introspectDatabase":
-    case "introspect-database":
+    case "introspectdatabase":
       return <IntrospectDatabaseTool {...props} />;
     default:
       return (
@@ -356,7 +507,7 @@ export const TimelineToolCall: FC<ToolCallMessagePartProps> = (props) => {
             </ToolMarkerIcon>
           }
         >
-          <ToolFallback {...props} />
+          <ToolFallback toolName={name} {...props} />
         </ChainOfThoughtStep>
       );
   }

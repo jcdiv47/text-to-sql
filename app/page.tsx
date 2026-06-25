@@ -15,7 +15,7 @@ export default function Home() {
           <div className="bg-sidebar-primary text-sidebar-primary-foreground flex size-8 items-center justify-center rounded-lg">
             <MessagesSquare className="size-4" />
           </div>
-          <span className="font-semibold">assistant-ui</span>
+          <span className="font-semibold">Text-to-SQL</span>
         </div>
 
         <div className="flex items-center gap-2">

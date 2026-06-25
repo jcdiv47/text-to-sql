@@ -1,22 +1,21 @@
 "use client";
 
-import { useMemo, type FC } from "react";
-import { AssistantCloud, AssistantRuntimeProvider, useAuiState } from "@assistant-ui/react";
-import { AssistantChatTransport, useChatRuntime } from "@assistant-ui/react-ai-sdk";
+import { useEffect, useState, type FC } from "react";
 import { ShareIcon } from "lucide-react";
-import { useAuth, UserButton } from "@clerk/nextjs";
+import { UserButton, useAuth } from "@clerk/nextjs";
 import { Thread } from "@/components/assistant-ui/thread";
 import { ThreadListSidebar } from "@/components/assistant-ui/threadlist-sidebar";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { chatUserKey, DEFAULT_THREAD_TITLE, setChatUser, useChatStore } from "@/lib/chat-store";
 
 const ThreadTitle: FC = () => {
-  const title = useAuiState(
-    (s) => s.threads.threadItems.find((t) => t.id === s.threads.mainThreadId)?.title,
-  );
+  const title = useChatStore((s) => s.threads.find((t) => t.id === s.currentId)?.title);
 
   return (
-    <span className="min-w-0 truncate text-sm font-medium">{title?.trim() || "New Chat"}</span>
+    <span className="min-w-0 truncate text-sm font-medium">
+      {title?.trim() || DEFAULT_THREAD_TITLE}
+    </span>
   );
 };
 
@@ -43,43 +42,44 @@ const Header: FC = () => {
 };
 
 export const Assistant = () => {
-  const { getToken } = useAuth();
+  const { isLoaded, userId } = useAuth();
+  const currentId = useChatStore((s) => s.currentId);
+  const newThread = useChatStore((s) => s.newThread);
+  const [hydratedUserKey, setHydratedUserKey] = useState<string | null>(null);
 
-  const cloud = useMemo(
-    () =>
-      new AssistantCloud({
-        baseUrl: process.env.NEXT_PUBLIC_ASSISTANT_BASE_URL!,
-        authToken: async () => {
-          const token = await getToken({ template: "assistant-ui" });
+  // Point the persisted (client-only) store at the signed-in user's namespace
+  // before any thread is read or created, so conversations never leak across
+  // Clerk accounts on a shared device. Re-runs whenever the user changes.
+  useEffect(() => {
+    if (!isLoaded) return;
+    setChatUser(userId);
+    setHydratedUserKey(chatUserKey(userId));
+  }, [isLoaded, userId]);
 
-          if (!token) throw new Error("Missing Clerk JWT");
+  // Ready only once the store has been rehydrated for *this* user. On an account
+  // switch React first re-renders with the new userId but the previous user's
+  // store; gating on the key (not a bare boolean) holds the placeholder for that
+  // frame instead of flashing the previous user's conversations.
+  const ready = hydratedUserKey === chatUserKey(userId);
 
-          return token;
-        },
-      }),
-    [getToken],
-  );
+  // Once this user's threads are loaded, guarantee an active thread exists.
+  useEffect(() => {
+    if (ready && !currentId) newThread();
+  }, [ready, currentId, newThread]);
 
-  const runtime = useChatRuntime({
-    cloud,
-    transport: new AssistantChatTransport({
-      api: "/api/chat",
-    }),
-  });
+  if (!ready || !currentId) {
+    return <div className="bg-sidebar h-full" />;
+  }
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <SidebarProvider className="bg-muted/30 h-full min-h-0">
-        <ThreadListSidebar />
-        <SidebarInset className="bg-muted/30 min-h-0 overflow-hidden p-2">
-          <div className="bg-background flex flex-1 flex-col overflow-hidden rounded-lg">
-            <Header />
-            <main className="flex-1 overflow-hidden">
-              <Thread />
-            </main>
-          </div>
-        </SidebarInset>
-      </SidebarProvider>
-    </AssistantRuntimeProvider>
+    <SidebarProvider className="h-full min-h-0">
+      <ThreadListSidebar variant="inset" />
+      <SidebarInset className="min-h-0 overflow-hidden">
+        <Header />
+        <main className="flex-1 overflow-hidden">
+          <Thread key={currentId} threadId={currentId} />
+        </main>
+      </SidebarInset>
+    </SidebarProvider>
   );
 };
