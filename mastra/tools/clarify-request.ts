@@ -3,6 +3,8 @@ import { z } from "zod";
 import {
   clarifyAgent,
   clarificationOutputSchema,
+  clarificationQuestionSchema,
+  normalizeChoiceType,
   type ClarificationOutput,
 } from "../agents/clarify-agent";
 
@@ -11,7 +13,7 @@ const fallbackClarification: ClarificationOutput = {
   questions: [
     {
       id: "intended_interpretation",
-      type: "single_choice",
+      type: "single",
       question: "Which interpretation should I use?",
       choices: [
         {
@@ -29,10 +31,6 @@ const fallbackClarification: ClarificationOutput = {
   ],
 };
 
-const clarifyRequestOutputSchema = clarificationOutputSchema.extend({
-  message: z.string().describe("User-facing clarification message with choices."),
-});
-
 const clarificationCandidateInputSchema = z.object({
   id: z
     .string()
@@ -47,17 +45,13 @@ const clarificationCandidateInputSchema = z.object({
     .describe("Optional one-sentence detail explaining this candidate."),
 });
 
-// kimi-k2.6 routinely abbreviates these to "single"/"multi"; normalize so the
-// enum doesn't hard-reject the call. `ambiguities` is only stringified into the
-// clarify agent's prompt, so tolerant input is safe here.
+// Tolerate single/multiple variants so the LLM does not have to return the exact
+// tokens; `normalizeChoiceType` lowercases and maps any `single*`/`multi*` value
+// before the enum check. `ambiguities` is only stringified into the clarify
+// agent's prompt, so tolerant input is safe here.
 const selectionInputSchema = z
-  .preprocess(
-    (value) => (value === "single" ? "single_choice" : value === "multi" ? "multi_choice" : value),
-    z.enum(["single_choice", "multi_choice"]),
-  )
-  .describe(
-    "Whether the user should choose exactly one (single_choice) or several (multi_choice).",
-  );
+  .preprocess(normalizeChoiceType, z.enum(["single", "multiple"]))
+  .describe("Whether the user should choose exactly one (single) or several (multiple).");
 
 const clarificationAmbiguityInputSchema = z.object({
   id: z.string().min(1).describe("Stable snake_case identifier for this ambiguity."),
@@ -74,71 +68,109 @@ const clarificationAmbiguityInputSchema = z.object({
     .describe("Candidate choices discovered before asking for clarification."),
 });
 
-type StructuredClarificationAmbiguity = z.infer<typeof clarificationAmbiguityInputSchema>;
+const clarifyInputSchema = z.object({
+  // Primary input: the model drafts the clarification itself once it has
+  // discovered the concrete candidates, and passes the finished questions here.
+  // The display transform renders these directly (see generateClarification).
+  questions: z
+    .array(clarificationQuestionSchema)
+    .min(1)
+    .max(3)
+    .optional()
+    .describe(
+      "The clarification questions to ask, each with explicit choices covering the concrete candidates you discovered. Provide these directly.",
+    ),
+  request: z.string().min(1).optional().describe("The user's original ambiguous request."),
+  ambiguities: z
+    .array(clarificationAmbiguityInputSchema)
+    .max(3)
+    .optional()
+    .describe(
+      "Fallback: structured independent ambiguities to resolve when you have not drafted `questions` yourself. A sub-agent turns these into questions.",
+    ),
+  ambiguity: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "The specific metric, filter, entity, time range, grouping, or limit that is ambiguous.",
+    ),
+  context: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Relevant conversation context that helps draft the choices."),
+});
+
+type ClarifyInput = z.infer<typeof clarifyInputSchema>;
+
+// The user's resolved choices, supplied by the form as the tool result (via the
+// AI SDK addToolResult), so the agent sees them and can write the final SQL.
+const clarifyOutputSchema = z.object({
+  answers: z
+    .array(z.object({ question: z.string(), answer: z.string() }))
+    .describe("The user's confirmed clarification choices, one entry per question."),
+});
 
 export const clarifyRequest = createTool({
   id: "clarify-request",
   description:
-    "Creates choice-based clarification questions for an ambiguous text-to-SQL request. Use before SQL generation when a query would require guessing.",
-  inputSchema: z.object({
-    request: z.string().min(1).describe("The user's original ambiguous request."),
-    ambiguities: z
-      .array(clarificationAmbiguityInputSchema)
-      .max(3)
-      .optional()
-      .describe(
-        "Structured independent ambiguities to resolve. Prefer this over free-text ambiguity/context when candidate choices are known.",
-      ),
-    ambiguity: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        "The specific metric, filter, entity, time range, grouping, or limit that is ambiguous.",
-      ),
-    context: z
-      .string()
-      .min(1)
-      .optional()
-      .describe("Relevant conversation context that helps draft the choices."),
-  }),
-  outputSchema: clarifyRequestOutputSchema,
-  execute: async ({ request, ambiguities, ambiguity, context }, toolContext) => {
-    const response = await clarifyAgent.generate(
-      buildClarificationPrompt({ request, ambiguities, ambiguity, context }),
-      {
-        abortSignal: toolContext.abortSignal,
-        requestContext: toolContext.requestContext,
-        structuredOutput: {
-          schema: clarificationOutputSchema,
-          jsonPromptInjection: true,
-          errorStrategy: "fallback",
-          fallbackValue: fallbackClarification,
-        },
-      },
-    );
-
-    const clarification = normalizeClarification(clarificationOutputSchema.parse(response.object));
-
-    return {
-      ...clarification,
-      message: formatClarificationMessage(clarification),
-    };
+    "Asks the user to resolve an ambiguous text-to-SQL request with choice-based questions. Draft the questions yourself and pass them as `questions`, each with explicit `choices` covering the concrete candidates you discovered. Use before SQL generation when a query would otherwise require guessing. The turn pauses for the user to choose; their choice comes back as the tool result.",
+  inputSchema: clarifyInputSchema,
+  outputSchema: clarifyOutputSchema,
+  // No execute: this is a client-side (human-in-the-loop) tool. When the model
+  // calls it, the turn ends with the call pending, the client renders the form,
+  // and the user's choice is supplied as the tool result — no server run is
+  // suspended, so no storage is required. The display `input` transform shapes
+  // the questions that render in the form: it uses the model's drafted
+  // `questions` directly, and only falls back to the clarify sub-agent when the
+  // model passed raw ambiguities instead.
+  //
+  // Tradeoff (fallback path only): the display transform context exposes neither
+  // `abortSignal` nor `requestContext`, so a sub-agent call here can't be
+  // cancelled by stop and its spans lose explicit user/session metadata. Accepted
+  // — it only runs when the model omits `questions`, and clarify is self-contained.
+  transform: {
+    display: {
+      input: async ({ input }) => generateClarification(input as ClarifyInput),
+    },
   },
 });
 
-const buildClarificationPrompt = ({
-  request,
-  ambiguities,
-  ambiguity,
-  context,
-}: {
-  request: string;
-  ambiguities?: StructuredClarificationAmbiguity[];
-  ambiguity?: string;
-  context?: string;
-}) => {
-  const sections = [`User request:\n${request}`];
+// Shapes the questions for the form. Never throws: the display transform
+// substitutes a generic "payload unavailable" placeholder on error, so we catch
+// and fall back to a usable question instead.
+const generateClarification = async (
+  input: ClarifyInput,
+): Promise<{ questions: ClarificationOutput["questions"] }> => {
+  // Fast path: the model already drafted usable questions (its normal behavior
+  // once it has discovered candidates) — render them as-is. No sub-agent call,
+  // so no added latency and none of the abort/context tradeoff above.
+  const drafted = z.array(clarificationQuestionSchema).min(1).safeParse(input?.questions);
+  if (drafted.success) {
+    return { questions: drafted.data.slice(0, 3) };
+  }
+
+  // Fallback: the model passed raw ambiguities instead — draft via the sub-agent.
+  try {
+    const response = await clarifyAgent.generate(buildClarificationPrompt(input), {
+      structuredOutput: {
+        schema: clarificationOutputSchema,
+        jsonPromptInjection: true,
+        errorStrategy: "fallback",
+        fallbackValue: fallbackClarification,
+      },
+    });
+
+    const clarification = normalizeClarification(clarificationOutputSchema.parse(response.object));
+    return { questions: clarification.questions };
+  } catch {
+    return { questions: fallbackClarification.questions };
+  }
+};
+
+const buildClarificationPrompt = ({ request, ambiguities, ambiguity, context }: ClarifyInput) => {
+  const sections = [`User request:\n${request ?? "(not provided)"}`];
 
   if (ambiguities?.length) {
     sections.push(
@@ -163,7 +195,7 @@ const buildClarificationPrompt = ({
       "If structured ambiguities are provided, create exactly one question for each item, in the same order.",
       "For structured ambiguities, use the provided question text, selection type, candidate ids, labels, and descriptions.",
       "Do not drop a structured ambiguity, merge two structured ambiguities into one question, or invent extra candidates.",
-      "Every question must be single-choice or multi-choice and include explicit choices.",
+      "Every question type must be exactly single or multiple and include explicit choices.",
       "Do not answer the data request.",
     ].join("\n"),
   );
@@ -172,11 +204,10 @@ const buildClarificationPrompt = ({
 };
 
 const normalizeClarification = (clarification: ClarificationOutput): ClarificationOutput => {
-  if (!clarification.needsClarification) {
-    return { needsClarification: false, questions: [] };
-  }
-
-  if (clarification.questions.length === 0) {
+  // The agent only calls clarify-request when it needs the user to choose, and the
+  // form always shows. So if the sub-agent drafts nothing usable, fall back to a
+  // generic question rather than rendering an empty form.
+  if (!clarification.needsClarification || clarification.questions.length === 0) {
     return fallbackClarification;
   }
 
@@ -184,24 +215,4 @@ const normalizeClarification = (clarification: ClarificationOutput): Clarificati
     needsClarification: true,
     questions: clarification.questions.slice(0, 3),
   };
-};
-
-const formatClarificationMessage = ({ needsClarification, questions }: ClarificationOutput) => {
-  if (!needsClarification) {
-    return "No clarification needed.";
-  }
-
-  return questions
-    .map((question, index) => {
-      const typeLabel = question.type === "single_choice" ? "choose one" : "choose one or more";
-      const choices = question.choices
-        .map((choice) => {
-          const detail = choice.description ? `: ${choice.description}` : "";
-          return `   - ${choice.label}${detail}`;
-        })
-        .join("\n");
-
-      return `${index + 1}. ${question.question} (${typeLabel})\n${choices}`;
-    })
-    .join("\n\n");
 };

@@ -6,9 +6,20 @@ import { createContext, useContext } from "react";
  * Minimal bridge so deeply-nested message parts (e.g. the clarify form) can
  * drive the active `useChat` without prop drilling. Provided by `Thread`.
  */
+export type ClarifyAnswer = { question: string; answer: string };
+
 export type ChatActions = {
   /** Sends a new user message into the current thread. */
   sendMessage: (text: string) => void;
+  /**
+   * Supplies the clarify form's choices as the pending clarify-request tool
+   * result, resuming the same assistant turn so the agent can write the SQL.
+   */
+  submitClarification: (args: {
+    tool: string;
+    toolCallId: string;
+    answers: ClarifyAnswer[];
+  }) => void;
   /** True while the assistant is streaming a response. */
   isRunning: boolean;
 };

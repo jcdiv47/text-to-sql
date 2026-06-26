@@ -3,30 +3,6 @@ import { introspectDatabase } from "../tools/introspect-database";
 import { executeSql } from "../tools/execute-sql";
 import { clarifyRequest } from "../tools/clarify-request";
 
-const isClarifyToolName = (name: string | undefined) =>
-  (name ?? "").replace(/[-_]/g, "").toLowerCase() === "clarifyrequest";
-
-// End the turn as soon as clarify-request returns an actual question, so the
-// agent does not take another step ruminating after asking the user — that
-// extra step keeps the stream "running", which would block the clarify form's
-// submit button and the composer (the hang). A failed call emits a tool-error
-// (not a tool-result), and a "no clarification needed" result has no questions;
-// in both cases the loop continues so the model can retry or answer.
-const stopAfterClarify = ({
-  steps,
-}: {
-  steps: Array<{ content?: Array<{ type: string; toolName?: string; output?: unknown }> }>;
-}) => {
-  const content = steps[steps.length - 1]?.content ?? [];
-  return content.some((part) => {
-    if (part.type !== "tool-result" || !isClarifyToolName(part.toolName)) return false;
-    const output = part.output as
-      | { needsClarification?: boolean; questions?: unknown[] }
-      | undefined;
-    return Boolean(output?.needsClarification && (output.questions?.length ?? 0) > 0);
-  });
-};
-
 export const sqlAgent = new Agent({
   id: "sql-agent",
   name: "SQL Agent",
@@ -51,7 +27,9 @@ You have three tool capabilities:
 1. Call introspect-database first before database-specific reasoning, candidate discovery, or writing final SQL, unless the current conversation already contains a fresh schema from this same request.
 2. Identify every independent ambiguity that blocks SQL generation, including metric, filters, time range, grouping, entity, comparison, category mapping, or result limit.
 3. Before calling clarify-request, use execute-sql to discover concrete candidate values for any ambiguity that can be resolved from database values. These are discovery queries, not the final answer.
-4. If SQL generation still requires user choices, call clarify-request once with the original user request and all remaining independent ambiguities. Prefer the structured \`ambiguities\` input with \`id\`, \`type\`, \`question\`, \`selection\`, and \`candidates\`; use free-text \`ambiguity\`/\`context\` only as supplemental background. clarify-request renders an interactive form for the user and the turn ends automatically after it runs, so the tool call is your entire response — nothing needs to be written before or after it. Don't generate the final query until the user answers.
+4. If SQL generation still requires user choices, call clarify-request once. Draft the clarification yourself and pass it as \`questions\`: one question per independent ambiguity, each with \`id\`, \`type\` (single or multiple), the exact \`question\` text, and explicit \`choices\` (each a short \`label\`, a stable \`id\`, and an optional one-line \`description\`) covering the concrete candidates you discovered. clarify-request renders an interactive form and pauses the turn until the user chooses; their choice comes back as the tool result. Don't write anything before calling it, and don't generate the final query until it returns.
+   - When clarify-request returns, its \`answers\` array holds the user's confirmed choice for each question. Use it as authoritative and continue to candidate discovery or the final SQL.
+   - A clarification reply may contain custom free-text the user typed instead of picking an offered choice (shown as "其他：<text>"). Treat that free-text as the authoritative answer for that question, and re-run introspection or candidate discovery (or, if it is still ambiguous, clarify again) before writing the final SQL.
 5. When the request is clear enough to query, convert the user's natural language question into a PostgreSQL-compatible SELECT query.
 6. Call execute-sql with the generated query.
 7. Present the results in a clear, readable format (use tables when appropriate).
@@ -84,22 +62,22 @@ You have three tool capabilities:
 
 - Ambiguous mall name: \`SELECT DISTINCT city, name, district FROM malls WHERE name ILIKE '%嘉里中心%' ORDER BY city, name LIMIT 12\`
 - Ambiguous category phrase: \`SELECT category_cn, category, COUNT(*) AS store_count FROM stores GROUP BY category_cn, category ORDER BY store_count DESC, category_cn LIMIT 12\`
-- Pass discovered values to clarify-request as structured \`ambiguities\`. For example, use one ambiguity for the mall entity and a separate ambiguity for category mapping when both block the final SQL.
+- Pass the discovered values to clarify-request as the \`choices\` of your drafted \`questions\`. For example, use one question for the mall entity and a separate question for category mapping when both block the final SQL.
 
 ## Response Format
 
 - Show the SQL query you generated so the user can learn from it.
 - Present results clearly. For tabular data, format as a markdown table.
-- Clarification is fully handled by clarify-request: its output is shown to the user as an interactive form and the turn ends on its own, so the tool call alone is the response — no accompanying message is needed.
+- Clarification is fully handled by clarify-request: it shows an interactive form, pauses for the user, then returns their answer — so don't write any accompanying message when you call it.
 - If the query returns no results, explain possible reasons.
 - If you're unsure about the schema, call introspect-database again.`;
   },
   tools: { clarifyRequest, introspectDatabase, executeSql },
   defaultOptions: {
     maxSteps: 8,
-    stopWhen: stopAfterClarify,
     modelSettings: {
       temperature: 0.7,
+      presencePenalty: 0.1,
     },
     providerOptions: {
       openrouter: {

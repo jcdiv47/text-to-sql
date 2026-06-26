@@ -2,7 +2,12 @@
 
 import { memo, useCallback, useEffect, useRef, useState, type FC, type ReactNode } from "react";
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, isToolOrDynamicToolUIPart, type UIMessage } from "ai";
+import {
+  DefaultChatTransport,
+  isToolOrDynamicToolUIPart,
+  lastAssistantMessageIsCompleteWithToolCalls,
+  type UIMessage,
+} from "ai";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -22,14 +27,17 @@ import {
   ChainOfThoughtReasoning,
   ChainOfThoughtText,
 } from "@/components/assistant-ui/chain-of-thought";
-import { ToolPart, isClarifyAskPart, isClarifyToolPart } from "@/components/assistant-ui/sql-tools";
+import {
+  ClarifyExchange,
+  ToolPart,
+  isClarifyAskPart,
+  isClarifyToolPart,
+} from "@/components/assistant-ui/sql-tools";
 import { ChatActionsProvider } from "@/components/assistant-ui/chat-context";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/lib/chat-store";
-
-const CLARIFY_ANSWER_PREFIX = "✓ 已选择";
 
 // The returned body fully replaces the default request body, so the default
 // fields (messages/id/trigger/messageId) must be passed through explicitly.
@@ -56,11 +64,14 @@ export const Thread: FC<{ threadId: string }> = ({ threadId }) => {
   const setThreadMessages = useChatStore((s) => s.setThreadMessages);
   const [initialMessages] = useState(() => useChatStore.getState().messagesById[threadId] ?? []);
 
-  const { messages, sendMessage, regenerate, stop, status, error } = useChat({
+  const { messages, sendMessage, regenerate, stop, status, error, addToolResult } = useChat({
     id: threadId,
     messages: initialMessages,
     transport,
     experimental_throttle: 50,
+    // Once the clarify form supplies its tool result, resume the same turn so the
+    // agent can write the SQL — no extra user message.
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
   });
 
   const isRunning = status === "submitted" || status === "streaming";
@@ -85,6 +96,16 @@ export const Thread: FC<{ threadId: string }> = ({ threadId }) => {
     [sendMessage],
   );
 
+  const submitClarification = useCallback(
+    (args: { tool: string; toolCallId: string; answers: { question: string; answer: string }[] }) =>
+      addToolResult({
+        tool: args.tool,
+        toolCallId: args.toolCallId,
+        output: { answers: args.answers },
+      }),
+    [addToolResult],
+  );
+
   // Pause: the last assistant turn is an unanswered clarification ask.
   const last = messages[messages.length - 1];
   const awaitingClarify = Boolean(
@@ -96,7 +117,7 @@ export const Thread: FC<{ threadId: string }> = ({ threadId }) => {
   const { scrollRef, onScroll, atBottom, scrollToBottom } = useAutoScroll(messages);
 
   return (
-    <ChatActionsProvider value={{ sendMessage: send, isRunning }}>
+    <ChatActionsProvider value={{ sendMessage: send, submitClarification, isRunning }}>
       <div
         className="aui-thread-root bg-background @container flex h-full flex-col"
         style={{
@@ -124,7 +145,6 @@ export const Thread: FC<{ threadId: string }> = ({ threadId }) => {
                 <AssistantMessage
                   key={message.id}
                   message={message}
-                  isLast={isLast}
                   running={isRunning && isLast}
                   showActionBar={!(isLast && isRunning)}
                   regenerate={regenerate}
@@ -399,34 +419,13 @@ const StandaloneIndicator: FC = () => (
   </div>
 );
 
-const ClarifyAnswerChip: FC<{ text: string }> = ({ text }) => {
-  const lines = text.split("\n").slice(1).filter(Boolean);
-  return (
-    <div className="ms-auto flex max-w-[85%] flex-wrap items-center justify-end gap-1.5">
-      <CheckIcon className="text-primary size-3.5" />
-      {lines.map((line, i) => (
-        <span
-          key={i}
-          className="border-border/60 bg-muted text-foreground rounded-full border px-2.5 py-1 text-xs"
-        >
-          {line}
-        </span>
-      ))}
-    </div>
-  );
-};
-
 const UserMessageImpl: FC<{ message: UIMessage }> = ({ message }) => {
   const text = messageText(message);
   return (
     <div className="fade-in slide-in-from-bottom-1 animate-in mx-auto flex w-full max-w-(--thread-max-width) justify-end px-2 duration-150">
-      {text.startsWith(CLARIFY_ANSWER_PREFIX) ? (
-        <ClarifyAnswerChip text={text} />
-      ) : (
-        <div className="bg-muted text-foreground max-w-[85%] rounded-xl px-4 py-2 whitespace-pre-wrap wrap-break-word">
-          {text}
-        </div>
-      )}
+      <div className="bg-muted text-foreground max-w-[85%] rounded-xl px-4 py-2 whitespace-pre-wrap wrap-break-word">
+        {text}
+      </div>
     </div>
   );
 };
@@ -435,8 +434,6 @@ const UserMessage = memo(UserMessageImpl);
 
 type AssistantMessageProps = {
   message: UIMessage;
-  /** True when this is the thread's last message (the only active clarify ask). */
-  isLast: boolean;
   running: boolean;
   showActionBar: boolean;
   regenerate: (options?: { messageId?: string }) => void;
@@ -444,7 +441,6 @@ type AssistantMessageProps = {
 
 const AssistantMessageImpl: FC<AssistantMessageProps> = ({
   message,
-  isLast,
   running,
   showActionBar,
   regenerate,
@@ -461,7 +457,17 @@ const AssistantMessageImpl: FC<AssistantMessageProps> = ({
     }
   }
 
-  const hasClarifyAsk = parts.some((p) => isToolOrDynamicToolUIPart(p) && isClarifyAskPart(p));
+  // Index of the clarify form (last clarify part, if any). Narration emitted
+  // before it is the model's pre-clarify rambling and is dropped in both the
+  // asking and answered phases; -1 on a normal turn disables the suppression.
+  let clarifyIndex = -1;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i];
+    if (isToolOrDynamicToolUIPart(p) && isClarifyToolPart(p)) {
+      clarifyIndex = i;
+      break;
+    }
+  }
 
   const groupChildren: ReactNode[] = [];
   const clarifyForms: ReactNode[] = [];
@@ -471,31 +477,29 @@ const AssistantMessageImpl: FC<AssistantMessageProps> = ({
   parts.forEach((p, i) => {
     if (isToolOrDynamicToolUIPart(p)) {
       if (isClarifyToolPart(p)) {
-        // Clarify is pulled out of the chain of thought; render the form only
-        // when it actually asks the user something AND it's still the active
-        // (last) turn. Once a later message follows, the ask was answered, so we
-        // drop the form to stop it being submitted again (e.g. after a reload).
-        if (isClarifyAskPart(p) && isLast) clarifyForms.push(<ToolPart key={i} part={p} />);
+        // Clarify is pulled out of the chain of thought and rendered as its own
+        // form/summary. ClarifyExchange picks the right phase from the tool state
+        // (drafting spinner → choice form → answered recap), so this is safe on
+        // any message, including after a reload.
+        clarifyForms.push(<ClarifyExchange key={i} part={p} />);
         return;
       }
       toolCount++;
       groupChildren.push(<ToolPart key={i} part={p} />);
       return;
     }
-    // On a clarify turn the interactive form is the point, so drop the model's
-    // (often rambling) reasoning and narration — only the discovery tool cards
-    // remain in the chain of thought.
-    if (p.type === "reasoning" && i <= lastThinkingIndex) {
-      if (!hasClarifyAsk) {
-        groupChildren.push(
-          <ChainOfThoughtReasoning key={i}>
-            <MarkdownText>{p.text}</MarkdownText>
-          </ChainOfThoughtReasoning>,
-        );
-      }
+    // Suppress reasoning/text before the clarify form (the interactive form is
+    // the point of the turn) — only the discovery tool cards stay in the chain
+    // of thought. Post-clarify thinking and the final answer still render.
+    if (p.type === "reasoning" && i <= lastThinkingIndex && i > clarifyIndex) {
+      groupChildren.push(
+        <ChainOfThoughtReasoning key={i}>
+          <MarkdownText>{p.text}</MarkdownText>
+        </ChainOfThoughtReasoning>,
+      );
       return;
     }
-    if (p.type === "text" && !hasClarifyAsk) {
+    if (p.type === "text" && i > clarifyIndex) {
       if (i <= lastThinkingIndex) {
         groupChildren.push(
           <ChainOfThoughtText key={i}>

@@ -7,7 +7,7 @@ A protected Next.js chat app where authenticated users ask natural-language ques
 1. `/` is a public landing page. `/chat` and `/api/*` require a signed-in Clerk user (`proxy.ts`).
 2. The chat UI streams messages to `/api/chat` via AI SDK `useChat` + `DefaultChatTransport`.
 3. `/api/chat` authenticates the request, invokes the Mastra `sql-agent`, and streams AI SDK v6 UI messages back.
-4. The agent introspects the schema, optionally asks choice-based clarification questions, runs a read-only `SELECT`, and writes the answer. Reasoning and tool calls render in a collapsible chain-of-thought; tables/charts render through `QueryResult`.
+4. The agent introspects the schema, optionally asks single- or multiple-choice clarification questions, runs a read-only `SELECT`, and writes the answer. Reasoning and tool calls render in a collapsible chain-of-thought; tables/charts render through `QueryResult`.
 
 Chat history is persisted **per user in the browser's `localStorage`** (Zustand, `lib/chat-store.ts`). There is no server-side persistence, Mastra Memory adapter, or Assistant Cloud integration in the current code path.
 

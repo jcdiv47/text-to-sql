@@ -14,6 +14,7 @@ import {
 import { getToolOrDynamicToolName, type DynamicToolUIPart, type ToolUIPart } from "ai";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { ChainOfThoughtStep } from "@/components/assistant-ui/chain-of-thought";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
@@ -49,12 +50,13 @@ const toToolCardProps = (part: AnyToolUIPart): ToolCardProps => {
 export const isClarifyToolPart = (part: AnyToolUIPart): boolean =>
   normalizeToolName(getToolOrDynamicToolName(part)) === "clarifyrequest";
 
-/** True when a clarify call actually asks the user something (needs an answer). */
-export const isClarifyAskPart = (part: AnyToolUIPart): boolean => {
-  if (!isClarifyToolPart(part)) return false;
-  const output = (part as { output?: ClarifyResult }).output;
-  return Boolean(output?.needsClarification && (output.questions?.length ?? 0) > 0);
-};
+/**
+ * True when a clarify call is paused awaiting the user's choice. clarify-request
+ * is a client-side (no-execute) tool, so it parks in `input-available` with no
+ * output until the form supplies its result.
+ */
+export const isClarifyAskPart = (part: AnyToolUIPart): boolean =>
+  isClarifyToolPart(part) && (part as { state: ToolState }).state === "input-available";
 
 /* ------------------------------------------------------------------ */
 /* SQL syntax highlighting                                              */
@@ -351,64 +353,125 @@ const IntrospectDatabaseTool: FC<ToolCardProps> = ({ state, output, errorText })
 /* clarifyRequest                                                       */
 /* ------------------------------------------------------------------ */
 
-type ClarifyChoice = { id: string; label: string; description?: string };
-type ClarifyQuestion = {
+export type ClarifyChoice = { id: string; label: string; description?: string };
+export type ClarifyQuestion = {
   id: string;
-  type: "single_choice" | "multi_choice";
+  // The clarify tool normalizes the agent's type to single/multiple upstream,
+  // so the form only ever receives these two values.
+  type: "single" | "multiple";
   question: string;
   choices: ClarifyChoice[];
 };
-type ClarifyResult = { needsClarification?: boolean; questions?: ClarifyQuestion[] };
+
+const isMultiClarifyQuestion = (type: ClarifyQuestion["type"]) => type === "multiple";
+
+type ClarifyAnswerEntry = { question: string; answer: string };
 
 /**
- * Renders the clarify-request tool's questions as clickable single/multi
- * choice options. On submit, the selection is sent back to the thread as a
- * follow-up message, which resumes the agent so it can generate the SQL.
+ * Renders the clarify exchange for one clarify-request tool part. clarify-request
+ * is a client-side (no-execute) tool, so it moves through three visible phases:
+ *   - drafting questions (input streaming) → a compact "preparing…" spinner;
+ *   - `input-available` with questions → the interactive choice form;
+ *   - answered (`output-available`) → a read-only summary of the choice.
+ * The questions live on the tool part's (display-transformed) `input`, and the
+ * chosen answers on its `output` once the form supplies the tool result.
  */
-const ClarifyRequestTool: FC<ToolCardProps> = ({ state, output }) => {
-  const { sendMessage, isRunning } = useChatActions();
-  const questions = (output as ClarifyResult | undefined)?.questions ?? [];
+export const ClarifyExchange: FC<{ part: AnyToolUIPart }> = ({ part }) => {
+  const state = (part as { state: ToolState }).state;
+  const questions = (part as { input?: { questions?: ClarifyQuestion[] } }).input?.questions ?? [];
+  const answers = (part as { output?: { answers?: ClarifyAnswerEntry[] } }).output?.answers;
+
+  if (state === "output-available" || state === "output-error") {
+    return answers && answers.length > 0 ? <ClarifyAnswerSummary answers={answers} /> : null;
+  }
+
+  if (state === "input-available" && questions.length > 0) {
+    return (
+      <ClarifyForm
+        tool={getToolOrDynamicToolName(part)}
+        toolCallId={(part as { toolCallId: string }).toolCallId}
+        questions={questions}
+      />
+    );
+  }
+
+  // input-streaming, or input-available before the sub-agent's questions land.
+  return (
+    <div className="text-muted-foreground my-2 flex items-center gap-2 text-sm">
+      <LoaderIcon className="size-4 shrink-0 animate-spin" aria-hidden />
+      <span>正在准备追问问题…</span>
+    </div>
+  );
+};
+
+const ClarifyForm: FC<{ tool: string; toolCallId: string; questions: ClarifyQuestion[] }> = ({
+  tool,
+  toolCallId,
+  questions,
+}) => {
+  const { submitClarification, isRunning } = useChatActions();
+  // Model-choice picks and the injected free-text "Other" option are tracked in
+  // separate state, so a model choice id (model-controlled and unconstrained —
+  // often arbitrary Unicode) can never be mistaken for an "Other" sentinel.
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
+  const [otherSelected, setOtherSelected] = useState<Record<string, boolean>>({});
+  const [otherText, setOtherText] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
 
-  const toggle = (q: ClarifyQuestion, choiceId: string) =>
+  // Single-choice: a model pick and the "Other" pick are mutually exclusive.
+  const toggle = (q: ClarifyQuestion, choiceId: string) => {
+    if (!isMultiClarifyQuestion(q.type)) {
+      setAnswers((prev) => ({ ...prev, [q.id]: [choiceId] }));
+      setOtherSelected((prev) => ({ ...prev, [q.id]: false }));
+      return;
+    }
     setAnswers((prev) => {
       const cur = prev[q.id] ?? [];
-      if (q.type === "single_choice") return { ...prev, [q.id]: [choiceId] };
       return {
         ...prev,
         [q.id]: cur.includes(choiceId) ? cur.filter((c) => c !== choiceId) : [...cur, choiceId],
       };
     });
+  };
 
-  const allAnswered =
-    questions.length > 0 && questions.every((q) => (answers[q.id]?.length ?? 0) > 0);
+  const toggleOther = (q: ClarifyQuestion) => {
+    const next = !(otherSelected[q.id] ?? false);
+    setOtherSelected((prev) => ({ ...prev, [q.id]: next }));
+    if (next && !isMultiClarifyQuestion(q.type)) {
+      setAnswers((prev) => ({ ...prev, [q.id]: [] }));
+    }
+  };
+
+  // A question is answered once it has a model pick or the "Other" option — and
+  // if "Other" is picked, the free-text field must be filled.
+  const isAnswered = (q: ClarifyQuestion) => {
+    const hasChoice = (answers[q.id] ?? []).length > 0;
+    const other = otherSelected[q.id] ?? false;
+    if (!hasChoice && !other) return false;
+    if (other && (otherText[q.id] ?? "").trim() === "") return false;
+    return true;
+  };
+  const allAnswered = questions.length > 0 && questions.every(isAnswered);
 
   const submit = () => {
     if (submitted || !allAnswered) return;
     setSubmitted(true);
-    // Concise confirmation: a "✓ 已选择" header + one line of chosen labels per
-    // question (in order). The agent maps each line to its question via the
-    // clarify tool result that immediately precedes this message in context.
-    const lines = questions.map((q) =>
-      (answers[q.id] ?? []).map((id) => q.choices.find((c) => c.id === id)?.label ?? id).join("、"),
-    );
-    sendMessage(`✓ 已选择\n${lines.join("\n")}`);
-  };
-
-  // No questions yet: a compact hint while the clarify agent drafts, or
-  // nothing once it decides no clarification is needed.
-  if (questions.length === 0) {
-    if (toolIsRunning(state)) {
-      return (
-        <div className="text-muted-foreground my-2 flex items-center gap-2 text-sm">
-          <LoaderIcon className="size-4 shrink-0 animate-spin" aria-hidden />
-          <span>正在准备澄清选项…</span>
-        </div>
+    // Supply the choices as the clarify-request tool result. One entry per
+    // question (in order); predefined picks become their labels, and an "Other"
+    // pick contributes the typed text as "其他：<text>" so the agent can tell the
+    // answer was off-menu.
+    const responses = questions.map((q) => {
+      const parts = (answers[q.id] ?? []).map(
+        (id) => q.choices.find((c) => c.id === id)?.label ?? id,
       );
-    }
-    return null;
-  }
+      if (otherSelected[q.id]) {
+        const text = (otherText[q.id] ?? "").trim();
+        if (text) parts.push(`其他：${text}`);
+      }
+      return { question: q.question, answer: parts.join("、") };
+    });
+    submitClarification({ tool, toolCallId, answers: responses });
+  };
 
   return (
     <div className="border-border/80 bg-muted/30 my-3 w-full space-y-4 rounded-xl border p-4">
@@ -417,7 +480,7 @@ const ClarifyRequestTool: FC<ToolCardProps> = ({ state, output }) => {
         <span>需要你确认</span>
       </div>
       {questions.map((q) => {
-        const multi = q.type === "multi_choice";
+        const multi = isMultiClarifyQuestion(q.type);
         return (
           <div key={q.id} className="space-y-2">
             <p className="text-sm font-medium">
@@ -468,6 +531,73 @@ const ClarifyRequestTool: FC<ToolCardProps> = ({ state, output }) => {
                   </button>
                 );
               })}
+              {(() => {
+                const otherIsSelected = otherSelected[q.id] ?? false;
+                return (
+                  <div
+                    className={cn(
+                      "rounded-lg border text-sm transition-colors",
+                      otherIsSelected ? "border-primary bg-primary/10" : "border-border/60",
+                    )}
+                  >
+                    <button
+                      type="button"
+                      disabled={submitted}
+                      onClick={() => toggleOther(q)}
+                      className={cn(
+                        "flex w-full items-start gap-2.5 rounded-lg px-3 py-2 text-start transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                        !otherIsSelected && "hover:bg-muted/50",
+                      )}
+                    >
+                      <span
+                        aria-hidden
+                        className={cn(
+                          "mt-0.5 flex size-4 shrink-0 items-center justify-center border transition-colors",
+                          multi ? "rounded-[5px]" : "rounded-full",
+                          otherIsSelected
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-muted-foreground/50",
+                        )}
+                      >
+                        {otherIsSelected &&
+                          (multi ? (
+                            <CheckIcon className="size-3" />
+                          ) : (
+                            <span className="bg-primary-foreground size-1.5 rounded-full" />
+                          ))}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="font-medium">其他（自行输入）</span>
+                        {!otherIsSelected && (
+                          <span className="text-muted-foreground block text-xs">
+                            以上选项都不合适时，填写你的想法
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                    {otherIsSelected && (
+                      <div className="pr-3 pb-2 pl-[2.375rem]">
+                        <Input
+                          autoFocus
+                          disabled={submitted}
+                          value={otherText[q.id] ?? ""}
+                          onChange={(e) =>
+                            setOtherText((prev) => ({ ...prev, [q.id]: e.target.value }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && allAnswered && !submitted && !isRunning) {
+                              e.preventDefault();
+                              submit();
+                            }
+                          }}
+                          placeholder="请输入你的想法…"
+                          className="h-8 rounded-none border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         );
@@ -475,6 +605,25 @@ const ClarifyRequestTool: FC<ToolCardProps> = ({ state, output }) => {
       <Button size="sm" disabled={!allAnswered || submitted || isRunning} onClick={submit}>
         {submitted ? "已提交" : "确认选择"}
       </Button>
+    </div>
+  );
+};
+
+/** Read-only recap of the user's clarify choice, shown once the form is answered. */
+const ClarifyAnswerSummary: FC<{ answers: ClarifyAnswerEntry[] }> = ({ answers }) => {
+  const lines = answers.map((a) => a.answer?.trim()).filter(Boolean);
+  if (lines.length === 0) return null;
+  return (
+    <div className="ms-auto my-2 flex max-w-[85%] flex-wrap items-center justify-end gap-1.5">
+      <CheckIcon className="text-primary size-3.5" />
+      {lines.map((line, i) => (
+        <span
+          key={i}
+          className="border-border/60 bg-muted text-foreground rounded-full border px-2.5 py-1 text-xs"
+        >
+          {line}
+        </span>
+      ))}
     </div>
   );
 };
@@ -492,8 +641,8 @@ export const ToolPart: FC<{ part: AnyToolUIPart }> = ({ part }) => {
   const props = toToolCardProps(part);
 
   switch (normalizeToolName(name)) {
-    case "clarifyrequest":
-      return <ClarifyRequestTool {...props} />;
+    // clarifyrequest is rendered directly by the thread (it needs the sibling
+    // approval data part for its questions), never through this dispatcher.
     case "executesql":
       return <ExecuteSqlTool {...props} />;
     case "introspectdatabase":

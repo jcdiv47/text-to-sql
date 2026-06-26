@@ -11,12 +11,28 @@ export const clarificationChoiceSchema = z.object({
     .describe("Optional one-sentence detail explaining when to pick this choice."),
 });
 
+/**
+ * Normalizes a single/multiple clarification type returned by the model: trims
+ * and lowercases, then maps any value starting with `single` to `single` and any
+ * value starting with `multi` to `multiple` (e.g. `Single`, `single-choice`,
+ * `Multiple`, `multi_choice`, `multiselect`). Other values pass through
+ * lowercased so the `single`/`multiple` enum still rejects them.
+ */
+export const normalizeChoiceType = (value: unknown) => {
+  if (typeof value !== "string") return value;
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized.startsWith("single")) return "single";
+  if (normalized.startsWith("multi")) return "multiple";
+  return normalized;
+};
+
 export const clarificationQuestionSchema = z.object({
   id: z.string().min(1).describe("Stable snake_case identifier for this clarification question."),
   type: z
-    .enum(["single_choice", "multi_choice"])
+    .preprocess(normalizeChoiceType, z.enum(["single", "multiple"]))
     .describe(
-      "Use single_choice when exactly one choice should be selected; multi_choice when several can apply.",
+      "Use single when exactly one choice should be selected; multiple when several can apply.",
     ),
   question: z.string().min(1).describe("Concise clarification question."),
   choices: z
@@ -56,9 +72,9 @@ Convert an ambiguous user request into the smallest useful clarification needed 
 
 - Ask only about details that materially change the SQL query, filters, joins, metric, time range, grouping, or result limit.
 - Use at most three short questions when multiple independent choices block progress.
-- Every question must be either single-choice or multi-choice and must include explicit answer choices.
-- Use single-choice when the user should pick exactly one interpretation.
-- Use multi-choice when multiple filters/entities/metrics can apply at the same time.
+- Every question must use type=single or type=multiple and must include explicit answer choices.
+- Use type=single when the user should pick exactly one interpretation.
+- Use type=multiple when multiple filters/entities/metrics can apply at the same time.
 - Provide 2-12 concise choices for each question.
 - Choices should be concrete interpretations, not open-ended prompts.
 - When the prompt contains structured ambiguities, treat them as authoritative: create one question per structured ambiguity, preserve the order, use the provided question text, and use the provided candidate ids/labels/descriptions.
