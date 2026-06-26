@@ -1,11 +1,19 @@
 "use client";
 
-import { createElement, memo, useState, type ComponentPropsWithoutRef, type FC } from "react";
+import {
+  createElement,
+  memo,
+  useMemo,
+  useState,
+  type ComponentPropsWithoutRef,
+  type FC,
+} from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CheckIcon, CopyIcon } from "lucide-react";
 
 import { HighlightedSql } from "@/components/assistant-ui/sql-tools";
+import { QueryResult } from "@/components/assistant-ui/query-result";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";
 
@@ -117,6 +125,70 @@ const CodeRenderer = ({
   );
 };
 
+/** Minimal shape of the hast nodes react-markdown hands to a component. */
+type HastNode = { type?: string; tagName?: string; value?: string; children?: HastNode[] };
+
+/** Concatenated text of a hast node's descendants (cell contents, formatting stripped). */
+function hastText(node: HastNode | undefined): string {
+  if (!node) return "";
+  if (node.type === "text") return node.value ?? "";
+  return (node.children ?? []).map(hastText).join("");
+}
+
+/**
+ * Reads a GFM table's header + body cells out of its hast node so a prose table
+ * can be rendered by the richer `QueryResult` surface (scrolling cap, numeric
+ * alignment, table⇄chart toggle). Returns null when there's nothing usable yet
+ * (e.g. mid-stream before any body rows arrive), so the caller can fall back to a
+ * plain table.
+ */
+function extractTableRows(node: HastNode | undefined): Record<string, string>[] | null {
+  const sections = node?.children ?? [];
+  const headerRow = sections
+    .find((c) => c.tagName === "thead")
+    ?.children?.find((c) => c.tagName === "tr");
+  const columns = (headerRow?.children ?? [])
+    .filter((c) => c.tagName === "th" || c.tagName === "td")
+    .map((c) => hastText(c).trim());
+  if (columns.length === 0) return null;
+
+  const bodyRows = (sections.find((c) => c.tagName === "tbody")?.children ?? []).filter(
+    (c) => c.tagName === "tr",
+  );
+  if (bodyRows.length === 0) return null;
+
+  return bodyRows.map((tr) => {
+    const cells = (tr.children ?? []).filter((c) => c.tagName === "td" || c.tagName === "th");
+    const row: Record<string, string> = {};
+    columns.forEach((col, i) => {
+      row[col] = hastText(cells[i]).trim();
+    });
+    return row;
+  });
+}
+
+/**
+ * Renders a GFM table the model writes into its answer through `QueryResult`, so
+ * long tables scroll, numeric columns align, and the user can toggle to a line or
+ * bar chart (mapping inferred from the data). Falls back to a plain table in a
+ * horizontal-scroll wrapper when the table can't be parsed or hasn't streamed in
+ * yet — which also fixes the latent wide-table overflow of the prose column.
+ */
+const TableRenderer = ({
+  node,
+  children,
+}: ComponentPropsWithoutRef<"table"> & { node?: unknown }) => {
+  const rows = useMemo(() => extractTableRows(node as HastNode | undefined), [node]);
+
+  if (rows) return <QueryResult rows={rows} className="my-2" />;
+
+  return (
+    <div className="aui-md-table-wrapper my-2 max-w-full overflow-x-auto">
+      <table className="aui-md-table w-full border-separate border-spacing-0">{children}</table>
+    </div>
+  );
+};
+
 const markdownComponents: Components = {
   h1: mdTag("h1", "aui-md-h1 mb-2 scroll-m-20 text-base font-semibold first:mt-0 last:mb-0"),
   h2: mdTag("h2", "aui-md-h2 mt-3 mb-1.5 scroll-m-20 text-sm font-semibold first:mt-0 last:mb-0"),
@@ -133,10 +205,7 @@ const markdownComponents: Components = {
   ul: mdTag("ul", "aui-md-ul marker:text-muted-foreground my-2 ms-4 list-disc [&>li]:mt-1"),
   ol: mdTag("ol", "aui-md-ol marker:text-muted-foreground my-2 ms-4 list-decimal [&>li]:mt-1"),
   hr: mdTag("hr", "aui-md-hr border-muted-foreground/20 my-2"),
-  table: mdTag(
-    "table",
-    "aui-md-table my-2 w-full border-separate border-spacing-0 overflow-y-auto",
-  ),
+  table: TableRenderer,
   th: mdTag(
     "th",
     "aui-md-th bg-muted px-2 py-1 text-start font-medium first:rounded-ss-lg last:rounded-se-lg [[align=center]]:text-center [[align=right]]:text-right",
