@@ -31,7 +31,23 @@ import { useChatStore } from "@/lib/chat-store";
 
 const CLARIFY_ANSWER_PREFIX = "✓ 已选择";
 
-const transport = new DefaultChatTransport({ api: "/api/chat" });
+// The returned body fully replaces the default request body, so the default
+// fields (messages/id/trigger/messageId) must be passed through explicitly.
+// Compute the date in the user's local timezone ("en-CA" => YYYY-MM-DD) per
+// request so it stays correct even if the tab is left open across midnight.
+const transport = new DefaultChatTransport({
+  api: "/api/chat",
+  prepareSendMessagesRequest: ({ id, messages, trigger, messageId, body }) => ({
+    body: {
+      ...body,
+      id,
+      messages,
+      trigger,
+      messageId,
+      currentDate: new Date().toLocaleDateString("en-CA"),
+    },
+  }),
+});
 
 const messageText = (message: UIMessage): string =>
   message.parts.map((p) => (p.type === "text" ? p.text : "")).join("");

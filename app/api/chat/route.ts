@@ -1,4 +1,5 @@
 import { handleChatStream } from "@mastra/ai-sdk";
+import { RequestContext } from "@mastra/core/request-context";
 import { auth } from "@clerk/nextjs/server";
 import { createUIMessageStreamResponse } from "ai";
 import { after } from "next/server";
@@ -22,12 +23,21 @@ export async function POST(req: Request) {
     getStringValue(params.sessionId) ??
     getStringValue(params.threadId);
 
+  // The browser sends the date already formatted in the user's local timezone;
+  // fall back to a server-side UTC date if it's missing (e.g. older clients).
+  const currentDate =
+    getStringValue(params.currentDate) ?? new Date().toISOString().slice(0, 10);
+
+  const requestContext = new RequestContext();
+  requestContext.set("currentDate", currentDate);
+
   try {
     const stream = await handleChatStream({
       mastra,
       agentId: "sql-agent",
       params: {
         ...params,
+        requestContext,
         tracingOptions: {
           ...params.tracingOptions,
           metadata: {

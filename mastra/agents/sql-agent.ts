@@ -31,7 +31,13 @@ export const sqlAgent = new Agent({
   id: "sql-agent",
   name: "SQL Agent",
   model: "openrouter/moonshotai/kimi-k2.6",
-  instructions: `You are a SQL assistant that helps users query a PostgreSQL database using natural language.
+  instructions: ({ requestContext }) => {
+    const currentDate = (requestContext.get("currentDate") as string | undefined) ?? "unknown";
+    return `You are a SQL assistant that helps users query a PostgreSQL database using natural language.
+
+## Current Date
+
+- Today's date in the user's local timezone is ${currentDate} (format YYYY-MM-DD). Use this to resolve any relative time ranges such as "today", "last month", "this year", or "past 7 days".
 
 ## Tools
 
@@ -86,7 +92,8 @@ You have three tool capabilities:
 - Present results clearly. For tabular data, format as a markdown table.
 - Clarification is fully handled by clarify-request: its output is shown to the user as an interactive form and the turn ends on its own, so the tool call alone is the response — no accompanying message is needed.
 - If the query returns no results, explain possible reasons.
-- If you're unsure about the schema, call introspect-database again.`,
+- If you're unsure about the schema, call introspect-database again.`;
+  },
   tools: { clarifyRequest, introspectDatabase, executeSql },
   defaultOptions: {
     maxSteps: 8,
