@@ -1,10 +1,10 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 import { createDatabaseClient, getDatabaseSchema, quoteIdentifier } from "./postgres";
-import { temporarySchemaComments } from "./temporary-schema-comments";
 
 type TableRow = {
   table_name: string;
+  table_comment: string | null;
 };
 
 type ColumnRow = {
@@ -18,6 +18,7 @@ type ColumnRow = {
   is_nullable: "YES" | "NO";
   column_default: string | null;
   is_primary_key: boolean;
+  column_comment: string | null;
 };
 
 type ForeignKeyRow = {
@@ -44,11 +45,15 @@ export const introspectDatabase = createTool({
 
       const tables = await client.query<TableRow>(
         `
-          SELECT table_name
-          FROM information_schema.tables
-          WHERE table_schema = $1
-            AND table_type = 'BASE TABLE'
-          ORDER BY table_name
+          SELECT
+            table_info.relname AS table_name,
+            obj_description(table_info.oid, 'pg_class') AS table_comment
+          FROM pg_class table_info
+          JOIN pg_namespace schema_info
+            ON schema_info.oid = table_info.relnamespace
+          WHERE schema_info.nspname = $1
+            AND table_info.relkind IN ('r', 'p')
+          ORDER BY table_info.relname
         `,
         [schemaName],
       );
@@ -65,6 +70,7 @@ export const introspectDatabase = createTool({
             c.numeric_scale,
             c.is_nullable,
             c.column_default,
+            col_description(table_info.oid, column_info.attnum) AS column_comment,
             EXISTS (
               SELECT 1
               FROM information_schema.table_constraints tc
@@ -79,6 +85,16 @@ export const introspectDatabase = createTool({
                 AND kcu.column_name = c.column_name
             ) AS is_primary_key
           FROM information_schema.columns c
+          JOIN pg_namespace schema_info
+            ON schema_info.nspname = c.table_schema
+          JOIN pg_class table_info
+            ON table_info.relnamespace = schema_info.oid
+           AND table_info.relname = c.table_name
+          JOIN pg_attribute column_info
+            ON column_info.attrelid = table_info.oid
+           AND column_info.attname = c.column_name
+           AND column_info.attnum > 0
+           AND NOT column_info.attisdropped
           WHERE c.table_schema = $1
           ORDER BY c.table_name, c.ordinal_position
         `,
@@ -146,12 +162,11 @@ export const introspectDatabase = createTool({
           `SELECT COUNT(*) AS count FROM ${quoteIdentifier(schemaName)}.${quoteIdentifier(tableName)}`,
         );
         const rowCount = Number(countResult.rows[0]?.count ?? 0);
-        const hardcodedComments = temporarySchemaComments[tableName];
 
         lines.push(`## ${tableName} (${rowCount} rows)`);
         lines.push("");
-        if (hardcodedComments?.table) {
-          lines.push(`Comment: ${hardcodedComments.table}`);
+        if (table.table_comment) {
+          lines.push(`Comment: ${normalizeMarkdownText(table.table_comment)}`);
           lines.push("");
         }
 
@@ -165,9 +180,7 @@ export const introspectDatabase = createTool({
           const defaultValue = column.column_default
             ? escapeMarkdownCell(column.column_default)
             : "";
-          const comment = hardcodedComments?.columns[column.column_name]
-            ? escapeMarkdownCell(hardcodedComments.columns[column.column_name])
-            : "";
+          const comment = column.column_comment ? escapeMarkdownCell(column.column_comment) : "";
           lines.push(
             `| ${column.column_name} | ${type} | ${nullable} | ${pk} | ${defaultValue} | ${comment} |`,
           );
@@ -206,4 +219,6 @@ const formatColumnType = (column: ColumnRow) => {
   return column.data_type || column.udt_name;
 };
 
-const escapeMarkdownCell = (value: string) => value.replaceAll("|", "\\|").replace(/\s+/g, " ");
+const normalizeMarkdownText = (value: string) => value.replace(/\s+/g, " ").trim();
+
+const escapeMarkdownCell = (value: string) => normalizeMarkdownText(value).replaceAll("|", "\\|");

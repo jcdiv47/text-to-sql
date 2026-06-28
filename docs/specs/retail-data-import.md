@@ -12,7 +12,6 @@ Import retail mall and store CSV files into PostgreSQL tables for the Text-to-SQ
 
 - `data/scripts/import-retail-data.mjs`
 - `package.json`
-- `mastra/tools/temporary-schema-comments.ts`
 
 ## Command
 
@@ -143,7 +142,7 @@ An index is created on `stores.mall_id`.
 
 ## Comments
 
-The import script writes PostgreSQL table/column comments. Separately, the live introspection tool currently uses hardcoded comments from `mastra/tools/temporary-schema-comments.ts` rather than reading database-native comments.
+The import script writes PostgreSQL table/column comments. The live introspection tool reads those database-native comments and includes them in the schema context returned to the agent.
 
 ## Requirements
 

@@ -14,7 +14,6 @@ Convert user questions into safe PostgreSQL `SELECT` queries against the configu
 - `mastra/tools/introspect-database.ts`
 - `mastra/tools/execute-sql.ts`
 - `mastra/tools/postgres.ts`
-- `mastra/tools/temporary-schema-comments.ts`
 - `mastra/index.ts`
 
 ## Agent configuration
@@ -91,12 +90,10 @@ Behavior:
 
 - Reads base tables in the configured schema.
 - Reads columns, data types, nullability, defaults, and primary-key membership.
+- Reads PostgreSQL-native table and column comments from the configured schema.
 - Reads foreign keys where both source and target schema equal the configured schema.
 - Counts rows for every table.
 - Returns a human-readable markdown schema document.
-- Adds table/column comments from `temporary-schema-comments.ts` for known `malls` and `stores` tables.
-
-Current caveat: database-native comments are not read by this tool; comments are hardcoded in `temporary-schema-comments.ts`.
 
 ## `execute-sql` tool
 
