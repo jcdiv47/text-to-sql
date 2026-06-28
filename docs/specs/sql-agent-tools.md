@@ -46,7 +46,7 @@ The agent instructions require it to:
 3. Use `execute-sql` discovery queries to find concrete candidate values before asking clarification questions.
 4. Call `clarify-request` once if independent ambiguities remain, drafting the questions itself and passing them as `questions` (each with explicit `choices` covering discovered candidates); write no accompanying message. The user's choice comes back as the tool result's `answers` array, which the agent treats as authoritative before continuing.
 5. Treat a free-text clarification reply (surfaced as `其他：<text>` when the user picks the "Other" option) as authoritative and re-run discovery/introspection — or clarify again — before writing SQL.
-6. Generate only PostgreSQL-compatible `SELECT` queries.
+6. Generate only PostgreSQL-compatible read-only `SELECT` queries. They may start with `WITH` when using CTEs, but the final statement must still be `SELECT`.
 7. Call `execute-sql` with the final query.
 8. Show the generated SQL in the final answer.
 9. Present tabular data as markdown tables when appropriate.
@@ -124,8 +124,8 @@ Safety rules:
   - `SET`, `RESET`, `LISTEN`, `NOTIFY`
   - `FOR UPDATE`, `FOR SHARE`, related row-lock clauses
   - `SELECT ... INTO`
-  - a semicolon followed by more non-whitespace on the **same line** (`/;.*\S/`). Note: this regex has no `s`/dot-all flag, so a second statement placed after a newline (e.g. `SELECT 1;\nSELECT 2`) is **not** caught by this pattern. The real protection against a destructive second statement is the keyword blockers above plus the `BEGIN READ ONLY` transaction, not this semicolon check.
-- Require the query to start with `SELECT`.
+  - a semicolon followed by more non-whitespace (`/;[\s\S]*\S/`), including across newlines.
+- Require the query to start with `SELECT` or `WITH`.
 - Open a transaction with `BEGIN READ ONLY`.
 - Set `search_path` to the configured schema and `pg_catalog` via `SET LOCAL` (transaction-scoped).
 - Run `EXPLAIN (VERBOSE, FORMAT JSON)` and collect all `Schema` fields from the plan.
@@ -135,7 +135,7 @@ Safety rules:
 
 Known limitations:
 
-- CTEs starting with `WITH` are currently rejected because the query must start with `SELECT`.
+- The start check allows `WITH`; mutating/admin CTEs are still rejected by blocked keyword patterns and the read-only transaction.
 - There is no automatic `LIMIT`; the model is instructed to add limits for top-N style questions.
 - Security depends on PostgreSQL's execution plan exposing referenced schemas as expected.
 

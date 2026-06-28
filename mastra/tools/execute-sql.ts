@@ -9,16 +9,18 @@ const BLOCKED_PATTERNS = [
   /\b(GRANT|REVOKE|VACUUM|ANALYZE|REINDEX|CLUSTER|LOCK)\b/i,
   /\b(SET|RESET|LISTEN|NOTIFY)\b/i,
   /\bFOR\s+(UPDATE|NO\s+KEY\s+UPDATE|SHARE|KEY\s+SHARE)\b/i,
-  /^\s*SELECT\b[\s\S]*\bINTO\b/i,
-  /;.*\S/, // multiple statements
+  /\bSELECT\b[\s\S]*\bINTO\b/i,
+  /;[\s\S]*\S/, // multiple statements
 ];
+
+const ALLOWED_QUERY_START = /^\s*(?:SELECT|WITH)\b/i;
 
 export const executeSql = createTool({
   id: "execute-sql",
   description:
-    "Executes a read-only SQL SELECT query against the configured PostgreSQL schema and returns the results.",
+    "Executes a read-only SQL SELECT query, optionally starting with WITH CTEs, against the configured PostgreSQL schema and returns the results.",
   inputSchema: z.object({
-    query: z.string().describe("The SQL SELECT query to execute"),
+    query: z.string().describe("The SQL SELECT query to execute. May start with WITH for CTEs."),
   }),
   outputSchema: z.object({
     rows: z.array(z.record(z.string(), z.unknown())).describe("Query result rows"),
@@ -34,8 +36,8 @@ export const executeSql = createTool({
       }
     }
 
-    if (!/^\s*SELECT\b/i.test(trimmed)) {
-      throw new Error("查询必须以 SELECT 开头。");
+    if (!ALLOWED_QUERY_START.test(trimmed)) {
+      throw new Error("查询必须以 SELECT 或 WITH 开头。");
     }
 
     const client = createDatabaseClient();
