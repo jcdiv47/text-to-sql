@@ -30,12 +30,12 @@ export const executeSql = createTool({
 
     for (const pattern of BLOCKED_PATTERNS) {
       if (pattern.test(trimmed)) {
-        throw new Error("Only SELECT queries are allowed.");
+        throw new Error("只能执行 SELECT 查询。");
       }
     }
 
     if (!/^\s*SELECT\b/i.test(trimmed)) {
-      throw new Error("Query must start with SELECT.");
+      throw new Error("查询必须以 SELECT 开头。");
     }
 
     const client = createDatabaseClient();
@@ -83,7 +83,7 @@ const assertExecutionPlanUsesAllowedSchema = async (
 
   for (const schemaName of referencedSchemas) {
     if (schemaName !== allowedSchema) {
-      throw new Error(`Only tables from schema "${allowedSchema}" may be queried.`);
+      throw new Error(`只能查询模式 "${allowedSchema}" 中的表。`);
     }
   }
 };

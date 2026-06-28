@@ -15,7 +15,7 @@ export async function POST(req: Request) {
   const { userId } = await auth();
 
   if (!userId) {
-    return new Response("Unauthorized", { status: 401 });
+    return new Response("未登录", { status: 401 });
   }
 
   const sessionId =
@@ -25,8 +25,7 @@ export async function POST(req: Request) {
 
   // The browser sends the date already formatted in the user's local timezone;
   // fall back to a server-side UTC date if it's missing (e.g. older clients).
-  const currentDate =
-    getStringValue(params.currentDate) ?? new Date().toISOString().slice(0, 10);
+  const currentDate = getStringValue(params.currentDate) ?? new Date().toISOString().slice(0, 10);
 
   const requestContext = new RequestContext();
   requestContext.set("currentDate", currentDate);

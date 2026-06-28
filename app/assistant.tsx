@@ -28,7 +28,7 @@ const Header: FC = () => {
         <TooltipIconButton
           variant="ghost"
           size="icon"
-          tooltip="Share"
+          tooltip="分享"
           side="bottom"
           disabled
           className="size-8"

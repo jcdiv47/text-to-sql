@@ -27,7 +27,7 @@ export const ThreadList: FC = () => {
         className="hover:bg-muted h-9 justify-start gap-2 rounded-lg px-3 text-sm"
       >
         <PlusIcon className="size-4" />
-        New Thread
+        新建会话
       </Button>
       {threads.map((thread) => (
         <ThreadListItem key={thread.id} id={thread.id} title={thread.title} />
@@ -66,7 +66,7 @@ const ThreadListItem: FC<{ id: string; title: string }> = ({ id, title }) => {
             "me-2 size-7 shrink-0 p-0 opacity-0 transition-opacity group-hover:opacity-100",
             active && "opacity-100",
           )}
-          aria-label="Delete thread"
+          aria-label="删除会话"
         >
           <TrashIcon className="size-4" />
         </Button>

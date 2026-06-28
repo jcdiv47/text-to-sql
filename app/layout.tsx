@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { ClerkProvider } from "@clerk/nextjs";
+import { zhCN } from "@clerk/localizations";
 import { dark } from "@clerk/themes";
 import { Geist, Geist_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -18,7 +19,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Text-to-SQL",
-  description: "Chat with your database in natural language.",
+  description: "用自然语言查询你的数据库。",
 };
 
 export default function RootLayout({
@@ -27,17 +28,18 @@ export default function RootLayout({
   children: ReactNode;
 }>) {
   return (
-    <ClerkProvider
-      dynamic
-      signInUrl="/sign-in"
-      signUpUrl="/sign-up"
-      appearance={{ baseTheme: dark }}
-    >
-      <html lang="en" className="dark">
-        <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-          <TooltipProvider>{children}</TooltipProvider>
-        </body>
-      </html>
-    </ClerkProvider>
+    <html lang="zh-CN" className="dark">
+      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
+        <ClerkProvider
+          dynamic
+          signInUrl="/sign-in"
+          signUpUrl="/sign-up"
+          localization={zhCN}
+          appearance={{ baseTheme: dark }}
+        >
+          <TooltipProvider key="app">{children}</TooltipProvider>
+        </ClerkProvider>
+      </body>
+    </html>
   );
 }

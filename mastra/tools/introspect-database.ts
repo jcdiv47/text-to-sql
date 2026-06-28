@@ -149,10 +149,10 @@ export const introspectDatabase = createTool({
         foreignKeysByTable.set(foreignKey.table_name, tableForeignKeys);
       }
 
-      const lines: string[] = ["# Database Schema", "", `Schema: ${schemaName}`, ""];
+      const lines: string[] = ["# 数据库结构", "", `模式：${schemaName}`, ""];
 
       if (tables.rows.length === 0) {
-        lines.push(`No tables found in schema "${schemaName}".`);
+        lines.push(`模式 "${schemaName}" 中未找到数据表。`);
         return { schema: lines.join("\n") };
       }
 
@@ -163,20 +163,20 @@ export const introspectDatabase = createTool({
         );
         const rowCount = Number(countResult.rows[0]?.count ?? 0);
 
-        lines.push(`## ${tableName} (${rowCount} rows)`);
+        lines.push(`## ${tableName}（${rowCount} 行）`);
         lines.push("");
         if (table.table_comment) {
-          lines.push(`Comment: ${normalizeMarkdownText(table.table_comment)}`);
+          lines.push(`说明：${normalizeMarkdownText(table.table_comment)}`);
           lines.push("");
         }
 
-        lines.push("| Column | Type | Nullable | PK | Default | Comment |");
-        lines.push("|--------|------|----------|----|---------|---------|");
+        lines.push("| 字段 | 类型 | 可为空 | 主键 | 默认值 | 说明 |");
+        lines.push("|------|------|--------|------|--------|------|");
 
         for (const column of columnsByTable.get(tableName) ?? []) {
           const type = formatColumnType(column);
-          const nullable = column.is_nullable === "YES" ? "YES" : "NO";
-          const pk = column.is_primary_key ? "YES" : "";
+          const nullable = column.is_nullable === "YES" ? "是" : "否";
+          const pk = column.is_primary_key ? "是" : "";
           const defaultValue = column.column_default
             ? escapeMarkdownCell(column.column_default)
             : "";
@@ -189,7 +189,7 @@ export const introspectDatabase = createTool({
         const tableForeignKeys = foreignKeysByTable.get(tableName) ?? [];
         if (tableForeignKeys.length > 0) {
           lines.push("");
-          lines.push("**Foreign Keys:**");
+          lines.push("**外键：**");
           for (const foreignKey of tableForeignKeys) {
             lines.push(
               `- ${foreignKey.column_name} -> ${foreignKey.foreign_table_name}.${foreignKey.foreign_column_name}`,

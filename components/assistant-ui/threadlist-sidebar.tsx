@@ -24,7 +24,7 @@ export function ThreadListSidebar({ ...props }: React.ComponentProps<typeof Side
                     <MessagesSquare className="aui-sidebar-header-icon size-4" />
                   </div>
                   <div className="aui-sidebar-header-heading me-6 flex flex-col gap-0.5 leading-none">
-                    <span className="aui-sidebar-header-title font-semibold">Conversations</span>
+                    <span className="aui-sidebar-header-title font-semibold">会话列表</span>
                   </div>
                 </div>
               </SidebarMenuButton>

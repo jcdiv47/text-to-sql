@@ -163,7 +163,7 @@ export const Thread: FC<{ threadId: string }> = ({ threadId }) => {
             <div className="relative">
               {!atBottom && !isEmpty && (
                 <TooltipIconButton
-                  tooltip="Scroll to bottom"
+                  tooltip="滚动到底部"
                   variant="outline"
                   onClick={scrollToBottom}
                   className="dark:border-border dark:bg-background dark:hover:bg-accent absolute -top-12 left-1/2 z-10 -translate-x-1/2 rounded-full p-4"
@@ -372,7 +372,7 @@ const Composer: FC<{
           disabled={disabled}
           rows={1}
           autoFocus
-          aria-label="Message input"
+          aria-label="消息输入框"
           className="placeholder:text-muted-foreground/80 field-sizing-content max-h-32 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base outline-none disabled:opacity-60"
         />
         <div className="flex items-center justify-end">
@@ -382,7 +382,7 @@ const Composer: FC<{
               size="icon"
               onClick={onStop}
               className="size-7 rounded-full"
-              aria-label="Stop generating"
+              aria-label="停止生成"
             >
               <SquareIcon className="size-3.5 fill-current" />
             </Button>
@@ -393,7 +393,7 @@ const Composer: FC<{
               onClick={submit}
               disabled={disabled || !value.trim()}
               className="size-7 rounded-full"
-              aria-label="Send message"
+              aria-label="发送消息"
             >
               <ArrowUpIcon className="size-4.5" />
             </Button>
@@ -412,7 +412,7 @@ const StandaloneIndicator: FC = () => (
   <div className="mx-auto w-full max-w-(--thread-max-width) px-2">
     <span
       className="text-muted-foreground inline-flex items-center gap-2 text-sm"
-      aria-label="Assistant is working"
+      aria-label="助手正在处理"
     >
       <LoaderCircleIcon className="size-4 animate-spin" aria-hidden />
     </span>
@@ -565,10 +565,10 @@ const AssistantActionBar: FC<{ text: string; onRegenerate: () => void }> = ({
 
   return (
     <div className="text-muted-foreground flex gap-1">
-      <TooltipIconButton tooltip="Copy" onClick={copy}>
+      <TooltipIconButton tooltip="复制" onClick={copy}>
         {copied ? <CheckIcon /> : <CopyIcon />}
       </TooltipIconButton>
-      <TooltipIconButton tooltip="Refresh" onClick={onRegenerate}>
+      <TooltipIconButton tooltip="重新生成" onClick={onRegenerate}>
         <RefreshCwIcon />
       </TooltipIconButton>
     </div>

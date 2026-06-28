@@ -129,7 +129,7 @@ export const ChainOfThoughtGroup: FC<ChainOfThoughtGroupProps> = ({
     }
   }, [running]);
 
-  const label = running ? "Working…" : duration != null ? `Thought for ${duration}s` : "Thought";
+  const label = running ? "处理中…" : duration != null ? `思考了 ${duration} 秒` : "思考";
 
   return (
     <Collapsible
@@ -161,9 +161,7 @@ export const ChainOfThoughtGroup: FC<ChainOfThoughtGroupProps> = ({
         {!running && toolCount > 0 && (
           <>
             <span className="text-muted-foreground/50">·</span>
-            <span>
-              {toolCount} tool {toolCount === 1 ? "call" : "calls"}
-            </span>
+            <span>{toolCount} 次工具调用</span>
           </>
         )}
         <ChevronDownIcon

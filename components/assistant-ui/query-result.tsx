@@ -451,9 +451,9 @@ const TableView: FC<{
 /* ------------------------------------------------------------------ */
 
 const TOGGLES: { mode: ViewMode; label: string; Icon: typeof TableIcon }[] = [
-  { mode: "table", label: "Table", Icon: TableIcon },
-  { mode: "line", label: "Line", Icon: ChartLineIcon },
-  { mode: "bar", label: "Bar", Icon: ChartColumnIcon },
+  { mode: "table", label: "表格", Icon: TableIcon },
+  { mode: "line", label: "折线", Icon: ChartLineIcon },
+  { mode: "bar", label: "柱状", Icon: ChartColumnIcon },
 ];
 
 export const QueryResult: FC<QueryResultProps> = ({ rows, chart, className }) => {
@@ -465,7 +465,7 @@ export const QueryResult: FC<QueryResultProps> = ({ rows, chart, className }) =>
   const [view, setView] = useState<ViewMode>(chart?.kind ?? "table");
 
   if (rows.length === 0) {
-    return <p className="text-muted-foreground mt-2.5 text-xs">0 rows returned</p>;
+    return <p className="text-muted-foreground mt-2.5 text-xs">返回 0 行</p>;
   }
 
   const mode: ViewMode = view !== "table" && !hasChart ? "table" : view;
@@ -474,8 +474,8 @@ export const QueryResult: FC<QueryResultProps> = ({ rows, chart, className }) =>
     <div className={cn("w-full", className)}>
       <div className="flex items-center justify-between gap-3">
         <span className="text-muted-foreground font-mono text-[11px]">
-          {rows.length} {rows.length === 1 ? "row" : "rows"}
-          {rows.length > MAX_TABLE_ROWS && mode === "table" ? " · scroll for more" : ""}
+          {rows.length} 行
+          {rows.length > MAX_TABLE_ROWS && mode === "table" ? " · 向下滚动查看更多" : ""}
         </span>
         {hasChart && (
           <div className="border-border/80 bg-muted/30 inline-flex gap-0.5 rounded-lg border p-0.5">

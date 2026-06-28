@@ -173,12 +173,12 @@ const TimelineToolCard: FC<TimelineToolCardProps> = ({ state, preview, meta, chi
         <span className="min-w-0 flex-1 truncate font-mono text-xs">{preview}</span>
         {running ? (
           <span className="relative shrink-0 text-[11px] font-medium">
-            <span className="text-muted-foreground">Running…</span>
+            <span className="text-muted-foreground">运行中…</span>
             <span
               aria-hidden
               className="shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none"
             >
-              Running…
+              运行中…
             </span>
           </span>
         ) : meta ? (
@@ -233,7 +233,7 @@ function formatCell(value: unknown): { text: string; isNull: boolean } {
 
 const SqlResultTable: FC<{ rows: Record<string, unknown>[] }> = ({ rows }) => {
   if (rows.length === 0) {
-    return <p className="text-muted-foreground mt-2.5 text-xs">0 rows returned</p>;
+    return <p className="text-muted-foreground mt-2.5 text-xs">返回 0 行</p>;
   }
   const columns = Object.keys(rows[0] ?? {});
   const visible = rows.slice(0, MAX_PREVIEW_ROWS);
@@ -277,7 +277,7 @@ const SqlResultTable: FC<{ rows: Record<string, unknown>[] }> = ({ rows }) => {
       </table>
       {hidden > 0 && (
         <div className="border-border/60 text-muted-foreground border-t px-3.5 py-1.5 font-mono text-[11px]">
-          +{hidden} more {hidden === 1 ? "row" : "rows"}
+          另有 {hidden} 行
         </div>
       )}
     </div>
@@ -289,8 +289,7 @@ const ExecuteSqlTool: FC<ToolCardProps> = ({ state, input, output, errorText }) 
   const flat = query.replace(/\s+/g, " ").trim();
   const result = output as ExecuteSqlResult | undefined;
   const rowCount = result?.rowCount ?? result?.rows?.length;
-  const meta =
-    rowCount !== undefined ? `${rowCount} ${rowCount === 1 ? "row" : "rows"}` : undefined;
+  const meta = rowCount !== undefined ? `${rowCount} 行` : undefined;
 
   return (
     <ChainOfThoughtStep
@@ -303,7 +302,7 @@ const ExecuteSqlTool: FC<ToolCardProps> = ({ state, input, output, errorText }) 
       <TimelineToolCard
         state={state}
         meta={meta}
-        preview={flat ? <HighlightedSql sql={flat} /> : "executeSql"}
+        preview={flat ? <HighlightedSql sql={flat} /> : "执行 SQL"}
       >
         <ToolError state={state} errorText={errorText} />
         {query && (
@@ -324,8 +323,7 @@ const ExecuteSqlTool: FC<ToolCardProps> = ({ state, input, output, errorText }) 
 const IntrospectDatabaseTool: FC<ToolCardProps> = ({ state, output, errorText }) => {
   const schema = (output as { schema?: string } | undefined)?.schema;
   const tableCount = schema ? (schema.match(/(^|\n)## /g) ?? []).length : undefined;
-  const meta =
-    tableCount !== undefined ? `${tableCount} ${tableCount === 1 ? "table" : "tables"}` : undefined;
+  const meta = tableCount !== undefined ? `${tableCount} 张表` : undefined;
 
   return (
     <ChainOfThoughtStep
@@ -335,14 +333,14 @@ const IntrospectDatabaseTool: FC<ToolCardProps> = ({ state, output, errorText })
         </ToolMarkerIcon>
       }
     >
-      <TimelineToolCard state={state} meta={meta} preview="introspectDatabase">
+      <TimelineToolCard state={state} meta={meta} preview="读取数据库结构">
         <ToolError state={state} errorText={errorText} />
         {schema ? (
           <pre className="bg-background/60 border-border/60 max-h-64 overflow-auto rounded-lg border px-3.5 py-2.5 font-mono text-[11px] leading-[1.7] whitespace-pre-wrap">
             {schema}
           </pre>
         ) : (
-          <p className="text-muted-foreground text-xs">Reading schema…</p>
+          <p className="text-muted-foreground text-xs">正在读取表结构…</p>
         )}
       </TimelineToolCard>
     </ChainOfThoughtStep>

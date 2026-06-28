@@ -64,7 +64,7 @@ const CodeHeader: FC<{ language: string; code: string }> = ({ language, code }) 
       <span className="aui-code-header-language text-muted-foreground font-medium lowercase">
         {language}
       </span>
-      <TooltipIconButton tooltip="Copy" onClick={onCopy}>
+      <TooltipIconButton tooltip="复制" onClick={onCopy}>
         {isCopied ? <CheckIcon /> : <CopyIcon />}
       </TooltipIconButton>
     </div>

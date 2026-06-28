@@ -67,6 +67,7 @@ export const clarifyAgent = new Agent({
 ## Goal
 
 Convert an ambiguous user request into the smallest useful clarification needed to safely continue.
+Write all user-facing question text, choice labels, and choice descriptions in Simplified Chinese unless the user explicitly asks for another language.
 
 ## Guidelines
 

@@ -50,14 +50,14 @@ export const ToolFallback: FC<ToolFallbackProps> = ({
         />
         <span className="relative inline-block grow text-start leading-none">
           <span>
-            Used tool: <b>{toolName}</b>
+            使用工具：<b>{toolName}</b>
           </span>
           {running && (
             <span
               aria-hidden
               className="shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none"
             >
-              Used tool: <b>{toolName}</b>
+              使用工具：<b>{toolName}</b>
             </span>
           )}
         </span>
@@ -83,7 +83,7 @@ export const ToolFallback: FC<ToolFallbackProps> = ({
         <div className="mt-3 flex flex-col gap-2 border-t pt-2">
           {errorText && (
             <div className="px-4">
-              <p className="text-muted-foreground font-semibold">Error:</p>
+              <p className="text-muted-foreground font-semibold">错误：</p>
               <p className="text-muted-foreground">{errorText}</p>
             </div>
           )}
@@ -94,7 +94,7 @@ export const ToolFallback: FC<ToolFallbackProps> = ({
           )}
           {output !== undefined && (
             <div className="border-t border-dashed px-4 pt-2">
-              <p className="font-semibold">Result:</p>
+              <p className="font-semibold">结果：</p>
               <pre className="whitespace-pre-wrap">{stringify(output)}</pre>
             </div>
           )}

@@ -14,17 +14,17 @@ const fallbackClarification: ClarificationOutput = {
     {
       id: "intended_interpretation",
       type: "single",
-      question: "Which interpretation should I use?",
+      question: "应该按哪种方式理解你的问题？",
       choices: [
         {
           id: "use_request_as_written",
-          label: "Use the request as written",
-          description: "Proceed with the most literal interpretation.",
+          label: "按原问题理解",
+          description: "按最直接的字面含义继续查询。",
         },
         {
           id: "provide_more_detail",
-          label: "I will provide more detail",
-          description: "I need to clarify the metric, filter, grouping, or time range first.",
+          label: "我补充更多信息",
+          description: "先补充指标、筛选条件、分组或时间范围。",
         },
       ],
     },
