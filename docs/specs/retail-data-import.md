@@ -6,7 +6,7 @@ Implemented script / current state.
 
 ## Goal
 
-Import retail mall and store CSV files into PostgreSQL tables for the Text-to-SQL assistant to query.
+Import retail city, mall, and store CSV files into PostgreSQL tables for the Text-to-SQL assistant to query.
 
 ## Relevant files
 
@@ -44,8 +44,9 @@ If either is missing, the script throws.
 The script expects these CSV files relative to the project root:
 
 ```txt
-data/malls.csv
-data/stores.csv
+data/import/cities.csv
+data/import/malls.csv
+data/import/stores.csv
 ```
 
 Current checkout note: only `data/scripts/` is present; the CSV files are not present in the repository state inspected for this spec.
@@ -54,11 +55,13 @@ Current checkout note: only `data/scripts/` is present; the CSV files are not pr
 
 Default mode imports to test tables:
 
+- `<DATABASE_SCHEMA>.cities_import_test`
 - `<DATABASE_SCHEMA>.malls_import_test`
 - `<DATABASE_SCHEMA>.stores_import_test`
 
 Live mode imports to production/query tables:
 
+- `<DATABASE_SCHEMA>.cities`
 - `<DATABASE_SCHEMA>.malls`
 - `<DATABASE_SCHEMA>.stores`
 
@@ -81,55 +84,67 @@ psql "$DATABASE_URL" --no-psqlrc -v ON_ERROR_STOP=1
 It performs:
 
 1. `BEGIN`
-2. `DROP TABLE IF EXISTS` for target stores then target malls
-3. `CREATE TABLE` for malls
-4. `CREATE TABLE` for stores
-5. `\copy` malls CSV into malls table
-6. `\copy` stores CSV into stores table
-7. Adds foreign key `stores.mall_id -> malls.id`
-8. Creates index on `stores.mall_id`
-9. Adds table and column comments
-10. `COMMIT`
-11. Prints row counts for both tables
+2. `DROP TABLE IF EXISTS` for target stores, target malls, then target cities
+3. `CREATE TABLE` for cities
+4. `CREATE TABLE` for malls
+5. `CREATE TABLE` for stores
+6. `\copy` cities CSV into cities table
+7. `\copy` malls CSV into malls table
+8. `\copy` stores CSV into stores table
+9. Adds foreign key `stores.mall_id -> malls.id`
+10. Adds foreign key `malls.city -> cities.city`
+11. Creates lookup indexes on `stores.mall_id`, `malls.city`, and city dimension columns
+12. Adds table and column comments
+13. `COMMIT`
+14. Prints row counts for all three tables
 
 The script assumes the target schema already exists.
 
+## Cities table columns
+
+| Column     | Type   | Constraint / meaning |
+| ---------- | ------ | -------------------- |
+| `city`     | `text` | primary key          |
+| `province` | `text` | not null             |
+| `城市等级` | `text` | not null             |
+| `大区`     | `text` | not null             |
+
 ## Malls table columns
 
-| Column | Type | Constraint / meaning |
-|---|---|---|
-| `id` | `text` | primary key |
-| `name` | `text` | not null |
-| `district` | `text` | not null |
-| `city` | `text` | not null, official city name ending in `市` |
-| `province` | `text` | not null |
-| `address` | `text` | not null |
-| `营业状态` | `text` | not null |
-| `open_date` | `date` | nullable |
-| `开发商集团` | `text` | nullable |
-| `商场定位` | `text` | nullable |
-| `商场评级` | `text` | nullable |
-| `商圈` | `text` | nullable |
-| `商圈评级` | `text` | nullable |
-| `area` | `numeric` | nullable |
-| `close_date` | `date` | nullable |
+| Column       | Type      | Constraint / meaning                        |
+| ------------ | --------- | ------------------------------------------- |
+| `id`         | `text`    | primary key                                 |
+| `name`       | `text`    | not null                                    |
+| `district`   | `text`    | not null                                    |
+| `city`       | `text`    | not null, official city name ending in `市` |
+| `province`   | `text`    | not null                                    |
+| `address`    | `text`    | not null                                    |
+| `营业状态`   | `text`    | not null                                    |
+| `open_date`  | `date`    | nullable                                    |
+| `开发商集团` | `text`    | nullable                                    |
+| `商场定位`   | `text`    | nullable                                    |
+| `商场评级`   | `text`    | nullable                                    |
+| `商圈`       | `text`    | nullable                                    |
+| `商圈评级`   | `text`    | nullable                                    |
+| `area`       | `numeric` | nullable                                    |
+| `close_date` | `date`    | nullable                                    |
 
 ## Stores table columns
 
-| Column | Type | Constraint / meaning |
-|---|---|---|
-| `id` | `text` | primary key |
-| `sku` | `text` | not null |
-| `brand_name` | `text` | not null |
-| `brand_name_cn` | `text` | not null |
-| `category` | `text` | not null |
-| `category_cn` | `text` | not null |
-| `mall_id` | `text` | not null, foreign key to malls |
-| `营业状态` | `text` | not null |
-| `floor` | `text` | nullable |
-| `open_date` | `date` | nullable |
-| `close_date` | `date` | nullable |
-| `area` | `numeric` | nullable |
+| Column          | Type      | Constraint / meaning           |
+| --------------- | --------- | ------------------------------ |
+| `id`            | `text`    | primary key                    |
+| `sku`           | `text`    | not null                       |
+| `brand_name`    | `text`    | not null                       |
+| `brand_name_cn` | `text`    | not null                       |
+| `category`      | `text`    | not null                       |
+| `category_cn`   | `text`    | not null                       |
+| `mall_id`       | `text`    | not null, foreign key to malls |
+| `营业状态`      | `text`    | not null                       |
+| `floor`         | `text`    | nullable                       |
+| `open_date`     | `date`    | nullable                       |
+| `close_date`    | `date`    | nullable                       |
+| `area`          | `numeric` | nullable                       |
 
 ## Relationship
 
@@ -138,7 +153,18 @@ The script assumes the target schema already exists.
 - `ON UPDATE CASCADE`
 - `ON DELETE RESTRICT`
 
-An index is created on `stores.mall_id`.
+`malls.city` references `cities.city` with:
+
+- `ON UPDATE CASCADE`
+- `ON DELETE RESTRICT`
+
+Indexes are created on:
+
+- `stores.mall_id`
+- `malls.city`
+- `cities.province`
+- `cities.城市等级`
+- `cities.大区`
 
 ## Comments
 
@@ -146,9 +172,10 @@ The import script writes PostgreSQL table/column comments. The live introspectio
 
 ## Requirements
 
-- Default import must not overwrite live `malls`/`stores` tables.
+- Default import must not overwrite live `cities`/`malls`/`stores` tables.
 - Live import must require explicit `--live --confirm`.
 - The script must fail fast on missing env vars or `psql` errors.
+- Imported malls must reference existing imported cities.
 - Imported stores must reference existing imported malls.
 - Null CSV fields must import as SQL null via `NULL ''`.
 
@@ -156,5 +183,6 @@ The import script writes PostgreSQL table/column comments. The live introspectio
 
 - Run default import against a dev database with CSV files present.
 - Confirm row-count output for `_import_test` tables.
+- Confirm `malls_import_test.city` foreign key rejects invalid city values.
 - Confirm `stores_import_test.mall_id` foreign key rejects invalid mall ids.
 - Run live import only after verifying test import and passing `--live --confirm`.

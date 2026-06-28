@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+// Load DATABASE_URL and DATABASE_SCHEMA when the script is run directly from Node.
 loadDotEnv(path.join(projectRoot, ".env"));
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -22,18 +23,34 @@ if (!schemaName) {
 const live = process.argv.includes("--live");
 
 if (live && !process.argv.includes("--confirm")) {
-  throw new Error("Refusing to overwrite malls/stores without --confirm");
+  throw new Error("Refusing to overwrite cities/malls/stores without --confirm");
 }
 
+// Default runs are safe: they recreate *_import_test tables. Use --live --confirm
+// only when you intend to replace the production import tables.
 const tables = live
-  ? { malls: "malls", stores: "stores" }
-  : { malls: "malls_import_test", stores: "stores_import_test" };
+  ? { cities: "cities", malls: "malls", stores: "stores" }
+  : {
+      cities: "cities_import_test",
+      malls: "malls_import_test",
+      stores: "stores_import_test",
+    };
 
-const mallsCsv = path.join(projectRoot, "data", "malls.csv");
-const storesCsv = path.join(projectRoot, "data", "stores.csv");
+const citiesCsv = path.join(projectRoot, "data", "import", "cities.csv");
+const mallsCsv = path.join(projectRoot, "data", "import", "malls.csv");
+const storesCsv = path.join(projectRoot, "data", "import", "stores.csv");
+
+// Column specs are [CSV/header column, PostgreSQL type, database comment].
+// Keeping comments here lets table creation and documentation stay in sync.
+const cityColumns = [
+  ["city", "text PRIMARY KEY", "城市名称，该表主键"],
+  ["province", "text NOT NULL", "城市所属省份、自治区、直辖市或特别行政区"],
+  ["城市等级", "text NOT NULL", "城市商业等级，如一线、新一线、二线等"],
+  ["大区", "text NOT NULL", "城市所属大区，如华东地区、华南地区等"],
+];
 
 const mallColumns = [
-  ["id", "text PRIMARY KEY", "商场ID，公司内部使用，与客户无关"],
+  ["id", "text PRIMARY KEY", "商场ID，该表主键，公司内部使用，与客户无关"],
   ["name", "text NOT NULL", "商场名称"],
   ["district", "text NOT NULL", "商场所在行政区"],
   ["city", "text NOT NULL", "商场所在城市，正式名称，以'市'结尾"],
@@ -51,7 +68,7 @@ const mallColumns = [
 ];
 
 const storeColumns = [
-  ["id", "text PRIMARY KEY", "门店ID，公司内部使用，与客户无关"],
+  ["id", "text PRIMARY KEY", "门店ID，该表主键，公司内部使用，与客户无关"],
   ["sku", "text NOT NULL", "门店品牌SKU，公司内部使用，与客户无关"],
   ["brand_name", "text NOT NULL", "门店品牌名称（英文）"],
   ["brand_name_cn", "text NOT NULL", "门店品牌名称（中文）"],
@@ -65,12 +82,20 @@ const storeColumns = [
   ["area", "numeric", "门店面积，单位来自原始数据，可能为空"],
 ];
 
+// Generate one psql script so table rebuilds, CSV copies, constraints, indexes,
+// and comments succeed or roll back together.
 const sql = `
-\\echo Import target: ${schemaName}.${tables.malls}, ${schemaName}.${tables.stores}
+\\echo Import target: ${schemaName}.${tables.cities}, ${schemaName}.${tables.malls}, ${schemaName}.${tables.stores}
 BEGIN;
 
+-- Recreate import targets from scratch so the CSV files are the source of truth.
 DROP TABLE IF EXISTS ${tableName(tables.stores)};
 DROP TABLE IF EXISTS ${tableName(tables.malls)};
+DROP TABLE IF EXISTS ${tableName(tables.cities)};
+
+CREATE TABLE ${tableName(tables.cities)} (
+${columnsSql(cityColumns)}
+);
 
 CREATE TABLE ${tableName(tables.malls)} (
 ${columnsSql(mallColumns)}
@@ -80,9 +105,12 @@ CREATE TABLE ${tableName(tables.stores)} (
 ${columnsSql(storeColumns)}
 );
 
+-- Load CSVs before adding foreign keys for faster bulk import.
+\\copy ${tableName(tables.cities)} (${columnNamesSql(cityColumns)}) FROM ${psqlString(citiesCsv)} WITH (FORMAT csv, HEADER true, NULL '')
 \\copy ${tableName(tables.malls)} (${columnNamesSql(mallColumns)}) FROM ${psqlString(mallsCsv)} WITH (FORMAT csv, HEADER true, NULL '')
 \\copy ${tableName(tables.stores)} (${columnNamesSql(storeColumns)}) FROM ${psqlString(storesCsv)} WITH (FORMAT csv, HEADER true, NULL '')
 
+-- Enforce the relationships the assistant should rely on when generating SQL.
 ALTER TABLE ${tableName(tables.stores)}
   ADD CONSTRAINT ${quoteIdentifier(`${tables.stores}_mall_id_fkey`)}
   FOREIGN KEY (mall_id)
@@ -90,14 +118,39 @@ ALTER TABLE ${tableName(tables.stores)}
   ON UPDATE CASCADE
   ON DELETE RESTRICT;
 
+ALTER TABLE ${tableName(tables.malls)}
+  ADD CONSTRAINT ${quoteIdentifier(`${tables.malls}_city_fkey`)}
+  FOREIGN KEY (city)
+  REFERENCES ${tableName(tables.cities)} (city)
+  ON UPDATE CASCADE
+  ON DELETE RESTRICT;
+
+-- Add lookup indexes for the common join/filter paths.
 CREATE INDEX ${quoteIdentifier(`${tables.stores}_mall_id_idx`)}
   ON ${tableName(tables.stores)} (mall_id);
 
+CREATE INDEX ${quoteIdentifier(`${tables.malls}_city_idx`)}
+  ON ${tableName(tables.malls)} (city);
+
+CREATE INDEX ${quoteIdentifier(`${tables.cities}_province_idx`)}
+  ON ${tableName(tables.cities)} (province);
+
+CREATE INDEX ${quoteIdentifier(`${tables.cities}_city_level_idx`)}
+  ON ${tableName(tables.cities)} (${quoteIdentifier("城市等级")});
+
+CREATE INDEX ${quoteIdentifier(`${tables.cities}_region_idx`)}
+  ON ${tableName(tables.cities)} (${quoteIdentifier("大区")});
+
+-- Store human-readable schema context in PostgreSQL for introspection tools.
+${commentsSql(tables.cities, "包含城市、省份、城市等级和大区信息的表", cityColumns)}
 ${commentsSql(tables.malls, "包含商场相关信息的表", mallColumns)}
 ${commentsSql(tables.stores, "包含门店及其品牌相关信息的表", storeColumns)}
 
 COMMIT;
 
+-- Print a compact import summary after the transaction commits.
+SELECT '${tables.cities}' AS table_name, count(*) AS rows FROM ${tableName(tables.cities)}
+UNION ALL
 SELECT '${tables.malls}' AS table_name, count(*) AS rows FROM ${tableName(tables.malls)}
 UNION ALL
 SELECT '${tables.stores}' AS table_name, count(*) AS rows FROM ${tableName(tables.stores)}
@@ -117,6 +170,7 @@ if (result.error) {
 
 process.exitCode = result.status ?? 1;
 
+// Minimal .env loader to avoid adding a runtime dependency for this standalone script.
 function loadDotEnv(filePath) {
   if (!existsSync(filePath)) {
     return;
@@ -150,6 +204,8 @@ function stripQuotes(value) {
   return value;
 }
 
+// SQL rendering helpers. Identifiers and string literals are escaped separately
+// because they follow different PostgreSQL quoting rules.
 function columnsSql(columns) {
   return columns.map(([name, type]) => `  ${quoteIdentifier(name)} ${type}`).join(",\n");
 }
