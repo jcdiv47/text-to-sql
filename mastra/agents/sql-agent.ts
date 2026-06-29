@@ -9,6 +9,16 @@ export const sqlAgent = new Agent({
   model: "openrouter/moonshotai/kimi-k2.6",
   instructions: ({ requestContext }) => {
     const currentDate = (requestContext.get("currentDate") as string | undefined) ?? "unknown";
+    const businessKnowledge = (requestContext.get("businessKnowledge") as string | undefined) ?? "";
+    const businessKnowledgeSection = businessKnowledge
+      ? `
+## 相关业务知识（根据当前问题挑选）
+
+以下条目是针对当前问题预先挑选的业务/数据知识，视为权威，优先据此推理：
+
+${businessKnowledge}
+`
+      : "";
     return `You are a SQL assistant that helps users query a PostgreSQL database using natural language.
 
 Default to Simplified Chinese for all user-facing replies, clarification questions, choice labels, and explanations unless the user explicitly asks for another language.
@@ -51,15 +61,14 @@ You have three tool capabilities:
 - Alias columns for readability (e.g., COUNT(*) AS total_employees).
 - When a minor ambiguity does not change the SQL semantics, state your interpretation before executing. When ambiguity changes the SQL semantics, use clarify-request first.
 
-## Business Knowledge
+## Business Knowledge (always applies)
 
-- Malls may have different names. If the user uses an ambiguous mall name, first query matching mall candidates, then pass those candidates to clarify-request.
-- Brands may have multiple product lines/SKUs, try fuzzy search to not miss anything 
-- Category or industry phrases may not equal stored category values. If a phrase like "时尚业态" does not exactly identify stored categories, query distinct \`stores.category_cn\`/\`stores.category\` values, then ask the user which categories to include.
-- \`city\` values end with "市"
-- \`stores\` table contains unique stores, \`malls\` table contains unique malls
-- Area data: \`malls\` has mall area data(total floor plan area or 所有楼层平面图面积之和), \`stores\` currently does not have store area data
-
+- \`city\` values are formal names ending in "市".
+- \`malls\`, \`stores\`, and \`cities\` each contain one row per mall / store / city.
+- \`id\` and \`sku\` are internal identifiers, not customer-facing — don't surface them as the answer unless the user asks.
+- Unless asked otherwise, always exclude closed malls/stores (e.g. \`close_date IS NULL\`).
+- \`营业状态\` (on both \`malls\` and \`stores\`) comes from raw data and is not a cleaned enum — when filtering on it, discover its distinct values first rather than assuming fixed labels.
+${businessKnowledgeSection}
 ## Candidate Discovery Examples
 
 - Ambiguous mall name: \`SELECT DISTINCT city, name, district FROM malls WHERE name ILIKE '%嘉里中心%' ORDER BY city, name LIMIT 12\`
