@@ -73,7 +73,7 @@ export const Assistant = () => {
 
   return (
     <SidebarProvider className="h-full min-h-0">
-      <ThreadListSidebar variant="inset" />
+      <ThreadListSidebar />
       <SidebarInset className="min-h-0 overflow-hidden">
         <Header />
         <main className="flex-1 overflow-hidden">

@@ -13,6 +13,7 @@ export type ThreadMeta = {
   id: string;
   title: string;
   updatedAt: number;
+  pinned?: boolean;
 };
 
 export const DEFAULT_THREAD_TITLE = "新对话";
@@ -26,6 +27,10 @@ type ChatState = {
   newThread: () => string;
   selectThread: (id: string) => void;
   deleteThread: (id: string) => void;
+  /** Toggles a thread's pinned flag; pinned threads sort to the top of the list. */
+  togglePin: (id: string) => void;
+  /** Sets a custom title; once renamed, it is no longer auto-derived from messages. */
+  renameThread: (id: string, title: string) => void;
   /** Persists a thread's messages and derives its title from the first user turn. */
   setThreadMessages: (id: string, messages: UIMessage[]) => void;
 };
@@ -94,6 +99,21 @@ export const useChatStore = create<ChatState>()(
       },
 
       selectThread: (id) => set({ currentId: id }),
+
+      togglePin: (id) =>
+        set((s) => ({
+          threads: s.threads.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t)),
+        })),
+
+      renameThread: (id, title) =>
+        set((s) => {
+          const next = title.trim();
+          // Ignore empties so a renamed thread keeps a usable, non-blank title.
+          if (!next) return s;
+          return {
+            threads: s.threads.map((t) => (t.id === id ? { ...t, title: next } : t)),
+          };
+        }),
 
       deleteThread: (id) =>
         set((s) => {
