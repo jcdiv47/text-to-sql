@@ -4,7 +4,7 @@ import { memo, useCallback, useEffect, useRef, useState, type FC, type ReactNode
 import { useChat } from "@ai-sdk/react";
 import {
   DefaultChatTransport,
-  isToolOrDynamicToolUIPart,
+  isToolUIPart,
   lastAssistantMessageIsCompleteWithToolCalls,
   type UIMessage,
 } from "ai";
@@ -109,8 +109,7 @@ export const Thread: FC<{ threadId: string }> = ({ threadId }) => {
   // Pause: the last assistant turn is an unanswered clarification ask.
   const last = messages[messages.length - 1];
   const awaitingClarify = Boolean(
-    last?.role === "assistant" &&
-    last.parts.some((p) => isToolOrDynamicToolUIPart(p) && isClarifyAskPart(p)),
+    last?.role === "assistant" && last.parts.some((p) => isToolUIPart(p) && isClarifyAskPart(p)),
   );
 
   const isEmpty = messages.length === 0;
@@ -451,7 +450,7 @@ const AssistantMessageImpl: FC<AssistantMessageProps> = ({
   let lastThinkingIndex = -1;
   for (let i = parts.length - 1; i >= 0; i--) {
     const p = parts[i];
-    if (p.type === "reasoning" || (isToolOrDynamicToolUIPart(p) && !isClarifyToolPart(p))) {
+    if (p.type === "reasoning" || (isToolUIPart(p) && !isClarifyToolPart(p))) {
       lastThinkingIndex = i;
       break;
     }
@@ -463,7 +462,7 @@ const AssistantMessageImpl: FC<AssistantMessageProps> = ({
   let clarifyIndex = -1;
   for (let i = parts.length - 1; i >= 0; i--) {
     const p = parts[i];
-    if (isToolOrDynamicToolUIPart(p) && isClarifyToolPart(p)) {
+    if (isToolUIPart(p) && isClarifyToolPart(p)) {
       clarifyIndex = i;
       break;
     }
@@ -475,7 +474,7 @@ const AssistantMessageImpl: FC<AssistantMessageProps> = ({
   let toolCount = 0;
 
   parts.forEach((p, i) => {
-    if (isToolOrDynamicToolUIPart(p)) {
+    if (isToolUIPart(p)) {
       if (isClarifyToolPart(p)) {
         // Clarify is pulled out of the chain of thought and rendered as its own
         // form/summary. ClarifyExchange picks the right phase from the tool state

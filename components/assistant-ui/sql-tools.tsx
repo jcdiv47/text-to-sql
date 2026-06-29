@@ -8,10 +8,11 @@ import {
   HelpCircleIcon,
   LoaderIcon,
   TableIcon,
+  TriangleAlertIcon,
   WrenchIcon,
   XCircleIcon,
 } from "lucide-react";
-import { getToolOrDynamicToolName, type DynamicToolUIPart, type ToolUIPart } from "ai";
+import { getToolName, type DynamicToolUIPart, type ToolUIPart } from "ai";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,7 +49,7 @@ const toToolCardProps = (part: AnyToolUIPart): ToolCardProps => {
 };
 
 export const isClarifyToolPart = (part: AnyToolUIPart): boolean =>
-  normalizeToolName(getToolOrDynamicToolName(part)) === "clarifyrequest";
+  normalizeToolName(getToolName(part)) === "clarifyrequest";
 
 /**
  * True when a clarify call is paused awaiting the user's choice. clarify-request
@@ -348,6 +349,77 @@ const IntrospectDatabaseTool: FC<ToolCardProps> = ({ state, output, errorText })
 };
 
 /* ------------------------------------------------------------------ */
+/* reportDataGap                                                        */
+/* ------------------------------------------------------------------ */
+
+const DATA_GAP_CATEGORY_LABEL: Record<string, string> = {
+  schema_gap: "缺少对应字段或表",
+  data_gap: "缺少相关数据",
+  granularity_gap: "数据粒度不足",
+  out_of_scope: "超出数据库范围",
+};
+
+type DataGapData = {
+  category?: string;
+  requested?: string;
+  missing?: string;
+  evidence?: string;
+  available?: string;
+};
+
+/**
+ * Renders a report-data-gap step: the agent's structured "this can't be answered
+ * from the database" signal. Unlike clarify-request it's an execute tool, so it
+ * flows through the normal timeline as a chain-of-thought card; the user-facing
+ * acknowledgment itself lives in the agent's final reply. `evidence` rides the
+ * tool-call input; the output echoes the rest.
+ */
+const ReportDataGapTool: FC<ToolCardProps> = ({ state, input, output, errorText }) => {
+  const data: DataGapData = { ...(input as DataGapData), ...(output as DataGapData) };
+  const categoryLabel = data.category
+    ? (DATA_GAP_CATEGORY_LABEL[data.category] ?? data.category)
+    : undefined;
+
+  return (
+    <ChainOfThoughtStep
+      icon={
+        <ToolMarkerIcon>
+          <TriangleAlertIcon />
+        </ToolMarkerIcon>
+      }
+    >
+      <TimelineToolCard
+        state={state}
+        meta={categoryLabel}
+        preview={data.requested ? `数据局限：${data.requested}` : "数据局限"}
+      >
+        <ToolError state={state} errorText={errorText} />
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs">
+          {data.missing && (
+            <>
+              <dt className="text-muted-foreground shrink-0">缺少</dt>
+              <dd className="min-w-0">{data.missing}</dd>
+            </>
+          )}
+          {data.evidence && (
+            <>
+              <dt className="text-muted-foreground shrink-0">依据</dt>
+              <dd className="text-muted-foreground min-w-0">{data.evidence}</dd>
+            </>
+          )}
+          {data.available && (
+            <>
+              <dt className="text-muted-foreground shrink-0">可改为回答</dt>
+              <dd className="min-w-0">{data.available}</dd>
+            </>
+          )}
+        </dl>
+      </TimelineToolCard>
+    </ChainOfThoughtStep>
+  );
+};
+
+/* ------------------------------------------------------------------ */
 /* clarifyRequest                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -386,7 +458,7 @@ export const ClarifyExchange: FC<{ part: AnyToolUIPart }> = ({ part }) => {
   if (state === "input-available" && questions.length > 0) {
     return (
       <ClarifyForm
-        tool={getToolOrDynamicToolName(part)}
+        tool={getToolName(part)}
         toolCallId={(part as { toolCallId: string }).toolCallId}
         questions={questions}
       />
@@ -635,7 +707,7 @@ const ClarifyAnswerSummary: FC<{ answers: ClarifyAnswerEntry[] }> = ({ answers }
  * other tool to the standard ToolFallback wrapped as a timeline step.
  */
 export const ToolPart: FC<{ part: AnyToolUIPart }> = ({ part }) => {
-  const name = getToolOrDynamicToolName(part);
+  const name = getToolName(part);
   const props = toToolCardProps(part);
 
   switch (normalizeToolName(name)) {
@@ -645,6 +717,8 @@ export const ToolPart: FC<{ part: AnyToolUIPart }> = ({ part }) => {
       return <ExecuteSqlTool {...props} />;
     case "introspectdatabase":
       return <IntrospectDatabaseTool {...props} />;
+    case "reportdatagap":
+      return <ReportDataGapTool {...props} />;
     default:
       return (
         <ChainOfThoughtStep

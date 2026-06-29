@@ -46,6 +46,7 @@ Tool calls render as timeline steps.
 
 - `executeSql`
 - `introspectDatabase`
+- `reportDataGap`
 - `clarifyRequest` — rendered via `ClarifyExchange` directly by the thread, **not** through the `ToolPart` dispatcher, because it owns its own form/answer-summary (see [Clarification flow](./clarification-flow.md))
 
 Tool names are normalized so kebab/camel/snake variants match.
@@ -63,6 +64,13 @@ Tool names are normalized so kebab/camel/snake variants match.
 - Header preview is `introspectDatabase`.
 - Metadata shows table count inferred from markdown headings.
 - Body shows the schema markdown as preformatted text with max height and scrolling.
+
+### `reportDataGap` tool card
+
+- An execute tool, so it renders through the normal `ToolPart` dispatcher as a chain-of-thought timeline step (not pulled out like `clarifyRequest`); the user-facing acknowledgment itself lives in the agent's final answer markdown.
+- Header preview is `数据局限：<requested>` (or `数据局限` before the request streams in).
+- Metadata shows the gap category as a Chinese label (`缺少对应字段或表` / `缺少相关数据` / `数据粒度不足` / `超出数据库范围`).
+- Body lists `缺少` (missing), `依据` (evidence), and `可改为回答` (available) when present.
 
 ### Unknown tools
 

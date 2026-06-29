@@ -13,6 +13,7 @@ Convert user questions into safe PostgreSQL `SELECT` queries against the configu
 - `mastra/agents/sql-agent.ts`
 - `mastra/tools/introspect-database.ts`
 - `mastra/tools/execute-sql.ts`
+- `mastra/tools/report-data-gap.ts`
 - `mastra/tools/postgres.ts`
 - `mastra/index.ts`
 
@@ -32,18 +33,21 @@ Convert user questions into safe PostgreSQL `SELECT` queries against the configu
   - `clarify-request`
   - `introspect-database`
   - `execute-sql`
+  - `report-data-gap`
 
 Instructions are a function of `requestContext`: the app injects `currentDate` (the user's local date as `YYYY-MM-DD`) so the agent can resolve relative time ranges (falling back to `unknown` when absent), and `businessKnowledge` — a per-question block of selected business knowledge rendered under `## 相关业务知识` (empty when none was selected). See [Business knowledge selection](./business-knowledge-selection.md).
 
 There is no `stopWhen` condition. The clarify turn ends naturally because `clarify-request` has **no `execute`** (a client-side human-in-the-loop tool): the model's call parks in `input-available` with the turn pending until the form supplies the tool result, which then resumes the same turn. See [Clarification flow](./clarification-flow.md).
+
+`report-data-gap`, by contrast, **has an `execute`** (a passthrough that echoes the gap) so it does **not** pause the turn: the model records the gap, the tool returns immediately, and the same turn continues so the agent can answer the closest supportable question. It exists to give the model a first-class action for "this can't be answered from the database" — countering the trained bias to push every request to a (possibly fabricated) answer — and to emit an observable signal for refusal-rate evals.
 
 ## Agent behavior requirements
 
 The agent instructions require it to:
 
 1. Call `introspect-database` before database-specific reasoning, candidate discovery, or final SQL unless a fresh schema is already present in the same request.
-2. Identify ambiguities that materially affect SQL generation.
-3. Use `execute-sql` discovery queries to find concrete candidate values before asking clarification questions.
+2. Ground the question by mapping every needed concept (entity, metric, filter, dimension, time range) to a concrete table/column, then triage into one of three paths: answerable (→ SQL), ambiguous value/choice (→ discovery + clarify), or a data gap (→ `report-data-gap`). It must not invent a table/column or silently substitute a related metric to force an answer.
+3. Use `execute-sql` discovery queries to find concrete candidate values before asking clarification questions. When discovery for an essential entity returns zero rows, treat it as a data gap rather than guessing or substituting a near-match.
 4. Call `clarify-request` once if independent ambiguities remain, drafting the questions itself and passing them as `questions` (each with explicit `choices` covering discovered candidates); write no accompanying message. The user's choice comes back as the tool result's `answers` array, which the agent treats as authoritative before continuing.
 5. Treat a free-text clarification reply (surfaced as `其他：<text>` when the user picks the "Other" option) as authoritative and re-run discovery/introspection — or clarify again — before writing SQL.
 6. Generate only PostgreSQL-compatible read-only `SELECT` queries. They may start with `WITH` when using CTEs, but the final statement must still be `SELECT`.
@@ -51,6 +55,8 @@ The agent instructions require it to:
 8. Show the generated SQL in the final answer.
 9. Present tabular data as markdown tables when appropriate.
 10. Explain likely reasons when a query returns no results.
+11. Call `report-data-gap` (with `category`, `requested`, `missing`, `evidence`) when the question or part of it cannot be answered from this database, only for gaps verified via introspection or an empty discovery query — never to dodge a hard but answerable query.
+12. After `report-data-gap` returns, answer the closest supportable question in the same turn when one exists, and state the limitation plainly and politely in Simplified Chinese in the final reply (not relying on the tool card alone).
 
 ## Business/domain knowledge
 
@@ -137,10 +143,44 @@ Known limitations:
 - There is no automatic `LIMIT`; the model is instructed to add limits for top-N style questions.
 - Security depends on PostgreSQL's execution plan exposing referenced schemas as expected.
 
+## `report-data-gap` tool
+
+Input schema:
+
+```ts
+{
+  category: "schema_gap" | "data_gap" | "granularity_gap" | "out_of_scope";
+  requested: string;          // what the user asked for that can't be served
+  missing: string;            // the absent table/column/metric/coverage/relationship
+  evidence: string;           // introspection finding or empty discovery query proving the gap
+  available?: string;         // closest related question the DB can answer (addressed in the same turn)
+}
+```
+
+Output schema (an echo, minus `evidence`):
+
+```ts
+{
+  acknowledged: true;
+  category: "schema_gap" | "data_gap" | "granularity_gap" | "out_of_scope";
+  requested: string;
+  missing: string;
+  available?: string;
+}
+```
+
+Behavior:
+
+- Has an `execute` (a passthrough that returns the echo), so it does **not** suspend the turn — the agent continues and answers the closest supportable question in the same turn.
+- Purpose: make "this can't be answered from the database" a first-class, structured action so the model surfaces capability gaps instead of fabricating an answer, and so refusals are observable in tracing.
+- Calibration guard: the agent is instructed to claim a gap only with evidence (an introspection finding or an empty discovery query), which keeps it from over-refusing answerable questions.
+- Rendered in the chat timeline as a dedicated "数据局限" chain-of-thought card (`components/assistant-ui/sql-tools.tsx`); the user-facing acknowledgment itself lives in the agent's final reply.
+
 ## Acceptance criteria
 
 - A normal clear request causes schema introspection, SQL execution, and a final answer with SQL shown.
 - Ambiguous requests cause discovery queries and then a `clarify-request` tool call instead of guessed final SQL.
+- A request whose required concept maps to no schema element (or whose essential discovery query returns zero rows) causes a `report-data-gap` call, followed in the same turn by an honest Simplified-Chinese acknowledgment plus the closest answerable data, instead of a fabricated or substituted answer.
 - Dangerous SQL is rejected before execution.
 - Queries against non-configured schemas are rejected by the EXPLAIN schema guard.
 - Database clients are closed on both success and failure.
