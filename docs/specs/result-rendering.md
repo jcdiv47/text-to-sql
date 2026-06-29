@@ -148,6 +148,12 @@ Missing values include nullish, blank, or non-numeric placeholders without digit
 - line chart
 - bar chart
 
+The header also exposes an export menu for non-empty result tables:
+
+- `CSV` downloads the current `QueryResult` rows as a UTF-8 CSV with a BOM so Chinese text opens cleanly in spreadsheet apps.
+- `Excel (.xls)` downloads the current `QueryResult` rows as an Excel-readable HTML worksheet with an `.xls` extension, avoiding a separate workbook dependency.
+- Exported text cells are prefixed when needed to prevent spreadsheet formula injection (`=`, `+`, `-`, `@`-style formula payloads), while numeric-looking positive/negative values are preserved.
+
 Current chart implementation is dependency-free SVG.
 
 Inference rules:

@@ -1,8 +1,23 @@
 "use client";
 
 import { useMemo, useState, type FC } from "react";
-import { ChartColumnIcon, ChartLineIcon, TableIcon } from "lucide-react";
+import {
+  ChartColumnIcon,
+  ChartLineIcon,
+  ChevronDownIcon,
+  DownloadIcon,
+  FileSpreadsheetIcon,
+  FileTextIcon,
+  TableIcon,
+} from "lucide-react";
 
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
 /**
@@ -51,6 +66,8 @@ type ViewMode = "table" | ChartKind;
 
 const MAX_TABLE_ROWS = 20; // rows shown before the table body scrolls
 const MAX_SERIES = 5; // matches --chart-1..--chart-5
+const CSV_MIME = "text/csv;charset=utf-8";
+const EXCEL_MIME = "application/vnd.ms-excel;charset=utf-8";
 
 const numFmtCompact = new Intl.NumberFormat(undefined, {
   notation: "compact",
@@ -104,6 +121,110 @@ function labelOf(value: unknown): string {
   if (value == null) return "—";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+
+/* ------------------------------------------------------------------ */
+/* Export helpers                                                       */
+/* ------------------------------------------------------------------ */
+
+function exportCellText(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function spreadsheetSafeText(value: string): string {
+  const trimmed = value.trimStart();
+  if (!trimmed) return value;
+
+  const first = trimmed[0];
+  const canBeNumber =
+    first === "-" || first === "+" ? toNumber(value) != null : Number.isFinite(Number(value));
+
+  if (first === "=" || first === "@" || first === "\t" || first === "\r") {
+    return `'${value}`;
+  }
+  if ((first === "-" || first === "+") && !canBeNumber) {
+    return `'${value}`;
+  }
+  return value;
+}
+
+function csvCell(value: unknown): string {
+  const safe = spreadsheetSafeText(exportCellText(value));
+  return `"${safe.replace(/"/g, '""')}"`;
+}
+
+function toCsv(rows: Record<string, unknown>[], columns: string[]): string {
+  const lines = [
+    columns.map(csvCell).join(","),
+    ...rows.map((row) => columns.map((col) => csvCell(row[col])).join(",")),
+  ];
+  return `\uFEFF${lines.join("\r\n")}`;
+}
+
+function htmlCell(value: unknown, tag: "th" | "td"): string {
+  const safe = spreadsheetSafeText(exportCellText(value))
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+  return `<${tag}>${safe}</${tag}>`;
+}
+
+function toExcelHtml(rows: Record<string, unknown>[], columns: string[]): string {
+  const header = columns.map((col) => htmlCell(col, "th")).join("");
+  const body = rows
+    .map((row) => `<tr>${columns.map((col) => htmlCell(row[col], "td")).join("")}</tr>`)
+    .join("");
+
+  return `<!doctype html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    table { border-collapse: collapse; }
+    th, td { border: 1px solid #d4d4d8; padding: 4px 8px; white-space: nowrap; }
+    th { background: #f4f4f5; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <table>
+    <thead><tr>${header}</tr></thead>
+    <tbody>${body}</tbody>
+  </table>
+</body>
+</html>`;
+}
+
+function exportTimestamp(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+function downloadTextFile(content: string, type: string, filename: string) {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+
+  const blob = new Blob([content], { type });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.append(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => window.URL.revokeObjectURL(url), 0);
+}
+
+function downloadRows(rows: Record<string, unknown>[], columns: string[], format: "csv" | "excel") {
+  const stamp = exportTimestamp();
+  if (format === "csv") {
+    downloadTextFile(toCsv(rows, columns), CSV_MIME, `query-result-${stamp}.csv`);
+    return;
+  }
+  downloadTextFile(toExcelHtml(rows, columns), EXCEL_MIME, `query-result-${stamp}.xls`);
 }
 
 /**
@@ -456,6 +577,31 @@ const TOGGLES: { mode: ViewMode; label: string; Icon: typeof TableIcon }[] = [
   { mode: "bar", label: "柱状", Icon: ChartColumnIcon },
 ];
 
+const ExportMenu: FC<{ rows: Record<string, unknown>[]; columns: string[] }> = ({
+  rows,
+  columns,
+}) => (
+  <DropdownMenu>
+    <DropdownMenuTrigger asChild>
+      <Button variant="outline" size="xs" className="h-7 gap-1.5 px-2 text-xs">
+        <DownloadIcon className="size-3.5" />
+        <span>导出</span>
+        <ChevronDownIcon className="size-3" />
+      </Button>
+    </DropdownMenuTrigger>
+    <DropdownMenuContent align="end" className="min-w-36">
+      <DropdownMenuItem onSelect={() => downloadRows(rows, columns, "csv")}>
+        <FileTextIcon />
+        CSV
+      </DropdownMenuItem>
+      <DropdownMenuItem onSelect={() => downloadRows(rows, columns, "excel")}>
+        <FileSpreadsheetIcon />
+        Excel (.xls)
+      </DropdownMenuItem>
+    </DropdownMenuContent>
+  </DropdownMenu>
+);
+
 export const QueryResult: FC<QueryResultProps> = ({ rows, chart, className }) => {
   const { columns, numericColumns, x, ys, hasChart } = useMemo(
     () => resolve(rows, chart),
@@ -472,32 +618,35 @@ export const QueryResult: FC<QueryResultProps> = ({ rows, chart, className }) =>
 
   return (
     <div className={cn("w-full", className)}>
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-muted-foreground font-mono text-[11px]">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-muted-foreground shrink-0 font-mono text-[11px]">
           {rows.length} 行
           {rows.length > MAX_TABLE_ROWS && mode === "table" ? " · 向下滚动查看更多" : ""}
         </span>
-        {hasChart && (
-          <div className="border-border/80 bg-muted/30 inline-flex gap-0.5 rounded-lg border p-0.5">
-            {TOGGLES.map(({ mode: m, label, Icon }) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setView(m)}
-                aria-pressed={mode === m}
-                className={cn(
-                  "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors",
-                  mode === m
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <Icon className="size-3.5" />
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          {hasChart && (
+            <div className="border-border/80 bg-muted/30 inline-flex gap-0.5 rounded-lg border p-0.5">
+              {TOGGLES.map(({ mode: m, label, Icon }) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setView(m)}
+                  aria-pressed={mode === m}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors",
+                    mode === m
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <Icon className="size-3.5" />
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          <ExportMenu rows={rows} columns={columns} />
+        </div>
       </div>
 
       {mode === "table" ? (
