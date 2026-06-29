@@ -33,7 +33,7 @@ Convert user questions into safe PostgreSQL `SELECT` queries against the configu
   - `introspect-database`
   - `execute-sql`
 
-Instructions are a function of `requestContext`: the app injects `currentDate` (the user's local date as `YYYY-MM-DD`) so the agent can resolve relative time ranges; it falls back to `unknown` when absent.
+Instructions are a function of `requestContext`: the app injects `currentDate` (the user's local date as `YYYY-MM-DD`) so the agent can resolve relative time ranges (falling back to `unknown` when absent), and `businessKnowledge` — a per-question block of selected business knowledge rendered under `## 相关业务知识` (empty when none was selected). See [Business knowledge selection](./business-knowledge-selection.md).
 
 There is no `stopWhen` condition. The clarify turn ends naturally because `clarify-request` has **no `execute`** (a client-side human-in-the-loop tool): the model's call parks in `input-available` with the turn pending until the form supplies the tool result, which then resumes the same turn. See [Clarification flow](./clarification-flow.md).
 
@@ -52,14 +52,12 @@ The agent instructions require it to:
 9. Present tabular data as markdown tables when appropriate.
 10. Explain likely reasons when a query returns no results.
 
-## Business/domain knowledge embedded in prompt
+## Business/domain knowledge
 
-- Mall names can be ambiguous; discover candidates before clarifying.
-- Brand names can have multiple product lines/SKUs; use fuzzy matching where useful.
-- Category phrases may not match stored category values; discover `stores.category_cn` / `stores.category` values and ask which to include.
-- `city` values end with `市`.
-- `stores` contains unique stores; `malls` contains unique malls.
-- `malls.area` contains mall area data; `stores` currently does not have reliable store area data according to the prompt.
+Knowledge reaches the agent in two layers (see [Business knowledge selection](./business-knowledge-selection.md)):
+
+- **Always-on invariants** in the prompt: `city` values end with `市`; `malls`, `stores`, and `cities` each hold one row per entity; `id`/`sku` are internal identifiers, not customer-facing; unless asked otherwise, exclude closed malls/stores (`close_date IS NULL`).
+- **Per-question selected knowledge** injected via `requestContext.businessKnowledge`: a selector agent picks up to 5 items from a predefined catalog (mall-name disambiguation, brand SKUs, category mapping, joins, metric definitions, data caveats, …), rendered under `## 相关业务知识`. The previously hardcoded contextual bullets (mall naming, brand SKUs, category mapping, area) moved into that catalog; the stale "stores has no area data" note was corrected — `stores.area` exists (`numeric`, may be null).
 
 ## PostgreSQL connection contract
 

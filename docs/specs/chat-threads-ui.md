@@ -89,7 +89,7 @@ Supported interactions:
 - Shift+Enter creates a newline.
 - Stop current generation.
 - Regenerate an assistant message.
-- Copy assistant final text.
+- Copy assistant message text parts from the action bar.
 - Auto-scroll while near the bottom.
 - Scroll-to-bottom button when user has scrolled away.
 - Starter suggestion chips grouped by 表结构 / 写查询 / 做分析 / 探索数据.

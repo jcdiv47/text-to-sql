@@ -55,15 +55,15 @@ If a protected request has no `userId`, the user is redirected to `/sign-in?redi
 
 ### API defense in depth
 
-`app/api/chat/route.ts` also calls `auth()` and returns `401 Unauthorized` if `userId` is missing. This protects direct API calls even if route middleware is bypassed or misconfigured.
+`app/api/chat/route.ts` also calls `auth()` and returns `401 Unauthorized` if `userId` is missing. In normal Next.js routing, `proxy.ts` redirects unauthenticated `/api/*` requests before this handler runs; the route-level 401 protects the handler if the proxy is bypassed, disabled, or invoked directly.
 
 ## Requirements
 
 - The app must allow unauthenticated access to `/`.
 - The app must block unauthenticated access to `/chat`.
 - The app must block unauthenticated access to all `/api/*` routes.
-- Redirects to sign-in must preserve the original URL using `redirect_url`.
-- `/api/chat` must return `401` for unauthenticated direct POST requests.
+- Proxy redirects to sign-in must preserve the original URL using `redirect_url`.
+- `/api/chat` must return `401` if the route handler is reached without an authenticated user.
 - Auth UI must use the embedded `/sign-in` and `/sign-up` routes.
 
 ## Edge cases
@@ -77,5 +77,6 @@ If a protected request has no `userId`, the user is redirected to `/sign-in?redi
 - Visit `/` signed out: page loads and shows sign-in/sign-up controls.
 - Visit `/chat` signed out: redirects to `/sign-in` with `redirect_url`.
 - Sign in from redirected page: returns to the intended route.
-- POST `/api/chat` signed out: receives HTTP 401.
+- POST `/api/chat` signed out through normal app routing: redirects to `/sign-in` with `redirect_url`.
+- Invoke the `/api/chat` route handler without a proxy-provided user: receives HTTP 401.
 - Visit `/chat` signed in: assistant UI renders.

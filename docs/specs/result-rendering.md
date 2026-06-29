@@ -15,7 +15,6 @@ Render assistant responses, SQL tool calls, query result tables, and simple char
 - `components/assistant-ui/sql-tools.tsx`
 - `components/assistant-ui/markdown-text.tsx`
 - `components/assistant-ui/query-result.tsx`
-- `app/query-result-demo/page.tsx`
 
 ## Message layout
 
@@ -116,7 +115,7 @@ Current live markdown path does not supply `chart`; chart mapping is inferred.
 ## Table behavior
 
 - Empty result: renders `0 rows returned`.
-- All rows remain in the DOM.
+- All rows remain in the DOM; tables with more than 20 rows add a `scroll for more` count hint.
 - Table is `w-full` inside a bordered scroll container.
 - Container has max height `560px` and scrolls for long tables.
 - Header is sticky.
@@ -159,10 +158,6 @@ Chart details:
 - Hover guide and tooltip show row/series values.
 - Multi-series charts show a legend.
 - X labels are thinned to avoid overlap.
-
-## Demo route
-
-`/query-result-demo` is a client-only showcase for `QueryResult` with sample datasets. It is not protected by `proxy.ts` unless matched by a broader route change.
 
 ## Requirements
 

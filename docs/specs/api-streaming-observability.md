@@ -11,6 +11,8 @@ Expose a protected chat API that streams AI SDK v6 UI messages from the Mastra S
 ## Relevant files
 
 - `app/api/chat/route.ts`
+- `mastra/knowledge/select-business-knowledge.ts`
+- `mastra/agents/business-knowledge-agent.ts`
 - `mastra/index.ts`
 - `mastra/workflows/sql-workflow.ts`
 - `components/assistant-ui/thread.tsx`
@@ -33,6 +35,8 @@ The route calls Clerk `auth()` and requires `userId`.
 - If absent: return `new Response("Unauthorized", { status: 401 })`.
 - If present: continue to Mastra streaming.
 
+In normal app routing, `proxy.ts` protects `/api(.*)` and redirects unauthenticated HTTP requests to `/sign-in` before this handler runs. The 401 check is the route's defense-in-depth behavior when the handler is reached without a user.
+
 ### Session id extraction
 
 The route derives a `sessionId` from the first non-empty string among:
@@ -43,18 +47,27 @@ The route derives a `sessionId` from the first non-empty string among:
 
 The AI SDK frontend currently passes the thread id as the `useChat` id, which is expected to arrive as one of these fields depending on transport serialization.
 
-### Request context (current date)
+### Request context (current date + business knowledge)
 
-Before streaming, the route resolves the current date and passes it to the agent via a Mastra `RequestContext`:
+Before streaming, the route builds a Mastra `RequestContext` with the current date and the selected business knowledge:
 
 ```ts
 const currentDate =
   getStringValue(params.currentDate) ?? new Date().toISOString().slice(0, 10);
+const businessKnowledge = await selectBusinessKnowledge({
+  question: getLatestUserQuestion(params.messages),
+  userId,
+  sessionId,
+  signal: req.signal,
+});
 const requestContext = new RequestContext();
 requestContext.set("currentDate", currentDate);
+requestContext.set("businessKnowledge", businessKnowledge);
 ```
 
-It prefers the browser-supplied `currentDate` (the user's local date) and falls back to the server's UTC date for older clients. `sql-agent` reads `requestContext.get("currentDate")` in its instructions to resolve relative time ranges (e.g. "today", "last month").
+It prefers the browser-supplied `currentDate` (the user's local date) and falls back to the server's UTC date for older clients. `sql-agent` reads `requestContext.get("currentDate")` to resolve relative time ranges (e.g. "today", "last month").
+
+`selectBusinessKnowledge` runs the `business-knowledge-agent` over the latest user question and returns a markdown block of the most relevant predefined knowledge, which `sql-agent` reads from `requestContext.get("businessKnowledge")` and renders under `## 相关业务知识`. It runs before streaming (one serial model call) bounded by an 8s timeout combined with the request's abort signal, carries the same `userId`/`sessionId` tracing metadata, and is best-effort — any failure, timeout, or abort yields an empty block, so selection can neither block nor fail the turn. See [Business knowledge selection](./business-knowledge-selection.md).
 
 ### Mastra stream invocation
 
@@ -108,18 +121,21 @@ The response is returned with `createUIMessageStreamResponse({ stream })`.
 - The API must stream AI SDK v6 UI messages.
 - Reasoning parts must be sent so the frontend can render chain-of-thought/tool progress.
 - Trace metadata must include `userId` and should include `sessionId` when available.
+- Business-knowledge selection runs before streaming, bounded by a timeout combined with the request's abort signal, and must degrade to an empty block on failure/timeout/abort, never blocking the turn.
 - Relative dates must resolve against the user's local `currentDate`, with a server UTC fallback.
 - Observability flushing must not block creation of the streaming response.
 
 ## Error handling
 
-- Authentication failure returns 401 before calling Mastra.
+- Authentication failure inside the route returns 401 before calling Mastra; normal proxy-routed signed-out HTTP requests are redirected before the route runs.
 - Tool/model errors are expected to appear as stream errors or AI SDK error state on the frontend.
 - The frontend displays `error.message || "出错了，请重试。"` above the composer.
 
 ## Manual verification
 
-- Signed-out POST to `/api/chat` returns 401.
+- Signed-out POST to `/api/chat` through normal app routing redirects to `/sign-in` with `redirect_url`.
+- Route-handler invocation without `userId` returns 401.
 - Signed-in chat request streams text/tool/reasoning parts.
 - Langfuse traces include Clerk `userId` and thread/session id when supplied.
+- Langfuse shows a `business-knowledge-agent` selection call carrying matching `userId`/`sessionId`.
 - Stopping the frontend generation aborts the active request/tool chain.
