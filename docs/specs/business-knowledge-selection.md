@@ -181,7 +181,7 @@ without `requestContext`; the selector runs in the route, which has it.)
   selection on any error, timeout, or abort.
 - Global safety/correctness invariants are never subject to selection.
 - The injected block is re-applied every turn (resume and regenerate included).
-- No server-side storage is introduced; the HITL clarify cycle is untouched.
+- No selector-specific storage is introduced; Convex chat persistence is independent, and the HITL clarify cycle is untouched.
 - The selector's catalog is the single source of contextual business knowledge
   (no duplication with the always-on prompt invariants).
 
@@ -190,8 +190,8 @@ without `requestContext`; the selector runs in the route, which has it.)
 - **Vector retrieval / hybrid rerank** for large catalogs (B/C from review).
 - **UI surface** showing which knowledge was used (would touch
   `chain-of-thought.tsx` / `sql-tools.tsx` / `tool-fallback.tsx`).
-- **Client-cached selection:** the browser already persists threads in
-  localStorage and can cache selected ids per thread, passing them in `params` so
+- **Cached selection:** Convex already persists threads/messages and could cache
+  selected ids per thread, passing them in `params` so
   the route reuses them on resume/regenerate and only re-runs the selector when
   the latest user question changes.
 - **Selection eval set** (question → expected ids) to track selection quality.

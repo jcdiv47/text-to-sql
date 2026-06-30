@@ -1,4 +1,4 @@
-# Chat threads and local persistence spec
+# Chat threads and Convex persistence spec
 
 ## Status
 
@@ -6,7 +6,7 @@ Implemented / current state.
 
 ## Goal
 
-Provide a multi-thread chat UI with local per-user persistence, streaming assistant responses, and interaction controls for stop/regenerate/copy/clarification.
+Provide a multi-thread chat UI with server-side per-user persistence, streaming assistant responses, sidebar search/management, and interaction controls for stop/regenerate/copy/clarification.
 
 ## Relevant files
 
@@ -15,72 +15,102 @@ Provide a multi-thread chat UI with local per-user persistence, streaming assist
 - `components/assistant-ui/thread-list.tsx`
 - `components/assistant-ui/threadlist-sidebar.tsx`
 - `components/assistant-ui/chat-context.tsx`
-- `lib/chat-store.ts`
+- `components/convex-client-provider.tsx`
+- `convex/schema.ts`
+- `convex/threads.ts`
+- `convex/messages.ts`
+- `convex/auth.config.ts`
+- `lib/chat-registry.ts`
+- `lib/chat-status.ts`
+- `lib/current-thread.ts`
+- `lib/chat-constants.ts`
+- `lib/convex.ts`
 
 ## Current architecture
 
-`Assistant` renders a sidebar and active `Thread` after Clerk has loaded and the local chat store has been rehydrated for the current Clerk user.
+`app/layout.tsx` mounts `ConvexClientProvider` inside `ClerkProvider`, so Convex queries and mutations run with the current Clerk session.
 
-Thread state is stored in browser localStorage using Zustand persist. The store key is namespaced as:
+`Assistant` renders a sidebar and active `Thread` after Convex auth resolves and the signed-in user's thread list has loaded. Threads and messages are stored in Convex, scoped to the Clerk user id returned by Convex auth (`identity.subject`). Browser Zustand stores are only used for in-memory UI state:
 
-```txt
-text-to-sql-chat:<clerk-user-id>
-```
+- `lib/current-thread.ts` tracks which thread is currently selected in this tab.
+- `lib/chat-status.ts` tracks live streaming status and last-save failure flags.
 
-If no user id is available, the namespace is `anon`, though `/chat` is protected so normal chat usage is authenticated.
+There is no browser `localStorage` chat-history store in the current code path.
 
-## Thread store contract
+## Convex persistence contract
 
-`lib/chat-store.ts` stores:
+`convex/schema.ts` defines:
 
 ```ts
-type ThreadMeta = {
-  id: string;
+type Thread = {
+  userId: string;
   title: string;
+  pinned: boolean;
   updatedAt: number;
 };
 
-type ChatState = {
-  threads: ThreadMeta[];
-  messagesById: Record<string, UIMessage[]>;
-  currentId: string;
+type Message = {
+  userId: string;
+  threadId: Id<"threads">;
+  messageId: string;
+  message: string; // JSON-serialized UIMessage
+  order: number;
+  searchText?: string;
 };
 ```
 
-Actions:
+Thread operations:
 
-- `newThread()` creates a thread, makes it current, and returns the id.
-- `selectThread(id)` switches the active thread.
-- `deleteThread(id)` removes metadata/messages and selects the first remaining thread if needed.
-- `setThreadMessages(id, messages)` persists AI SDK `UIMessage[]` and derives a title from the first user turn.
+- `threads.list()` returns the caller's threads, sorted pinned-first then most-recently updated.
+- `threads.browse({ search })` returns the caller's threads filtered by Convex full-text search over message prose and generated SQL.
+- `threads.create()` creates an empty thread and returns its id.
+- `threads.rename({ threadId, title })` trims and stores a non-empty title.
+- `threads.togglePin({ threadId })` toggles pinned state.
+- `threads.titleFromFirstMessage({ threadId, text })` titles a default-titled thread from the first user message, truncated to 40 characters plus ellipsis.
+- `threads.remove({ threadId })` deletes the owned thread and all its message rows.
+
+Message operations:
+
+- `messages.list({ threadId })` returns the caller's message JSON strings in conversation order, or `[]` if the thread is absent/not owned.
+- `messages.replace({ threadId, messages })` reconciles the full serialized `UIMessage[]`: upsert by stable message id, update order/search text, delete rows no longer present, and patch `updatedAt`.
 
 Current details:
 
-- Empty existing threads are reused to avoid piling up blank sessions.
 - Default title is `新对话`.
-- Derived titles are truncated to 40 characters plus ellipsis.
-- Persistence uses `skipHydration: true`; `setChatUser(userId)` must be called to point the store at the correct namespace and rehydrate.
-- Merge behavior resets in-memory data before applying persisted data to prevent cross-account leakage.
+- Empty/default-titled threads that are not currently streaming are reused by the new-thread button to avoid piling up blank sessions.
+- AI SDK messages are stored as JSON strings because tool outputs can include non-ASCII SQL result column names, which Convex object field names cannot safely carry.
+- `searchText` is extracted from message text and `execute-sql` query inputs so sidebar search can find threads by question, answer, or generated SQL.
+- Message replacement is last-writer-wins for the whole thread; live cross-tab merge/conflict resolution is not implemented.
 
 ## Assistant shell behavior
 
 `app/assistant.tsx`:
 
-- Waits for Clerk `isLoaded`.
-- Calls `setChatUser(userId)` whenever the signed-in user changes.
-- Tracks the hydrated user key and renders a blank sidebar-colored placeholder until the matching namespace is loaded.
-- Creates an active thread if none exists after hydration.
+- Waits for `useConvexAuth()` and skips thread queries until authenticated.
+- Queries `api.threads.list` for the signed-in user's threads.
+- Keeps the selected thread in `useCurrentThread`, a non-persisted in-memory store.
+- If the current selection is missing, selects the first listed thread (pinned-first, then most recent) or creates one if the user has none.
+- Renders a blank sidebar-colored placeholder until Convex auth, the thread list, and a valid current thread are ready.
 - Renders `ThreadListSidebar`, header, disabled share button, thread title, and Clerk `UserButton`.
+
+`components/assistant-ui/thread-list.tsx`:
+
+- Uses `api.threads.list` for the unfiltered list and `api.threads.browse` for search results.
+- Provides a search field, no-results state, pinned indicators, live streaming spinner, and menu actions for pin/unpin, rename, and delete.
+- On delete, disposes the live browser chat for that thread, clears the selected id if needed, and calls `threads.remove`.
 
 ## Thread runtime behavior
 
 `components/assistant-ui/thread.tsx`:
 
 - Uses `useChat` from `@ai-sdk/react`.
-- Uses `DefaultChatTransport({ api: "/api/chat" })`.
+- Binds `useChat({ chat })` to a registry-owned AI SDK `Chat` from `lib/chat-registry.ts`.
+- The registry uses `DefaultChatTransport({ api: "/api/chat" })` and injects `currentDate` into every send request.
 - Uses the thread id as the chat id.
-- Seeds initial messages from `useChatStore.getState().messagesById[threadId]`.
-- Persists messages when status becomes `ready` or `error` and again on unmount/thread switch.
+- Seeds initial messages from `api.messages.list`, waiting for the query before creating a new live chat so persisted history is not overwritten by an empty seed.
+- Reuses an existing live chat instance when switching back to a thread, so active streams continue while the thread is off-screen.
+- Persists settled turns to Convex from the registry on `onFinish` and `onError`, not on every token and not from component unmount.
+- Shows a save-failure warning if the latest persistence write fails.
 - Throttles streaming updates with `experimental_throttle: 50`.
 
 Supported interactions:
@@ -93,6 +123,8 @@ Supported interactions:
 - Auto-scroll while near the bottom.
 - Scroll-to-bottom button when user has scrolled away.
 - Starter suggestion chips grouped by 表结构 / 写查询 / 做分析 / 探索数据.
+- Sidebar search across message prose and generated SQL.
+- Thread pin/unpin, rename, and delete.
 
 ## Clarification gating
 
@@ -107,24 +139,29 @@ On submit the form calls `addToolResult` (via `submitClarification`, bridged thr
 
 ## Requirements
 
-- Thread history must not leak between Clerk users on the same device.
+- Thread history must not leak between Clerk users.
+- Convex queries and mutations must enforce thread ownership by Clerk user id.
 - A newly signed-in or switched user must not briefly see the previous user's threads.
-- The active thread must be stable across refreshes for the same user if persisted.
-- Streaming must not write every token to localStorage; writes should occur on settle/unmount.
+- Thread history must survive browser refresh for the same Clerk user.
+- Streaming must not write every token to Convex; writes should occur when a turn settles.
+- The client must not create a live chat with an empty seed before persisted messages have loaded.
 - User messages must be trimmed before sending; empty messages must not send.
 - The composer must be disabled while awaiting clarification.
 
 ## Known limitations
 
-- Chat persistence is local to one browser/device.
-- There is no server-side thread sync, sharing, or Assistant Cloud persistence in the current code path.
+- Current thread selection is in-memory only; after refresh the app opens the first thread from the Convex list (pinned-first, then most recent).
+- Live chat instances are tab-local and seeded once. Separate tabs/devices do not live-merge in-progress state, and stale writers can overwrite newer Convex history when they settle.
+- There is no Assistant Cloud persistence, Mastra memory adapter, or sharing in the current code path.
 - The share button is rendered but disabled.
-- Message persistence happens on settle/unmount; a hard browser/process crash mid-stream can lose the in-progress response.
+- Message persistence happens when a turn settles; a hard browser/process crash mid-stream can lose the in-progress response.
 
 ## Manual verification
 
 - Create two threads; switch between them; refresh; both remain for the same user.
 - Sign out/sign in as another Clerk user on the same browser; previous user's threads do not flash or appear.
-- Delete the active thread; first remaining thread becomes active or no active thread remains until a new one is created.
+- Search for text from a previous question/answer or generated SQL; matching threads appear.
+- Pin and rename a thread; refresh; the pinned/title state remains.
+- Delete the active thread; the next available thread becomes active or a new thread is created if none remain.
 - Start generation; stop button appears; stop cancels generation.
 - Trigger clarification; composer disables until choices are submitted.

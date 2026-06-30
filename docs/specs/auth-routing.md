@@ -31,6 +31,8 @@ Keep the landing page public while requiring Clerk authentication for chat and A
 
 The root `<html>` element always has `className="dark"`.
 
+`ConvexClientProvider` is mounted inside `ClerkProvider`, so Convex receives the active Clerk session for thread and message queries.
+
 ### Public landing page
 
 `app/page.tsx` is a client component.
@@ -69,7 +71,7 @@ If a protected request has no `userId`, the user is redirected to `/sign-in?redi
 ## Edge cases
 
 - If Clerk has not loaded on the client, landing auth controls may render according to Clerk's current hook state.
-- If a user changes accounts on a shared browser, chat storage rehydration is handled separately by `lib/chat-store.ts` and `app/assistant.tsx`.
+- If a user changes accounts on a shared browser, chat history scoping is enforced by Convex auth and `app/assistant.tsx` waits for the signed-in user's Convex thread list before rendering a thread.
 - Static assets and Next.js internals are excluded from the proxy matcher.
 
 ## Manual verification
