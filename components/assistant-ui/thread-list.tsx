@@ -1,14 +1,20 @@
 "use client";
 
-import { useMemo, useState, type FC } from "react";
+import { useDeferredValue, useState, type FC } from "react";
 import {
+  LoaderCircleIcon,
   MoreHorizontalIcon,
   PencilIcon,
   PinIcon,
   PinOffIcon,
   PlusIcon,
+  SearchIcon,
   TrashIcon,
+  XIcon,
 } from "lucide-react";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -28,50 +34,98 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { DEFAULT_THREAD_TITLE, useChatStore } from "@/lib/chat-store";
+import { DEFAULT_THREAD_TITLE } from "@/lib/chat-constants";
+import { disposeChat } from "@/lib/chat-registry";
+import { isThreadStreaming, useThreadStatus } from "@/lib/chat-status";
+import { useCurrentThread } from "@/lib/current-thread";
 
 export const ThreadList: FC = () => {
-  const threads = useChatStore((s) => s.threads);
-  const newThread = useChatStore((s) => s.newThread);
+  const createThread = useMutation(api.threads.create);
+  const setCurrentId = useCurrentThread((s) => s.setCurrentId);
 
-  // Pinned threads float to the top; sort is stable so order is otherwise kept.
-  const ordered = useMemo(
-    () => [...threads].sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false)),
-    [threads],
-  );
+  // Unfiltered list drives the "reuse an empty thread" guard — an untitled
+  // empty thread has no searchable content, so it must not depend on the search.
+  const allThreads = useQuery(api.threads.list) ?? [];
+
+  const [search, setSearch] = useState("");
+  // Defer the search term so each keystroke doesn't re-issue the query.
+  const deferredSearch = useDeferredValue(search);
+  const trimmedSearch = deferredSearch.trim();
+
+  const results = useQuery(api.threads.browse, { search: trimmedSearch || undefined }) ?? [];
+
+  const onNew = async () => {
+    // Avoid piling up empty sessions: reuse an untouched thread (still the
+    // default title and not mid-stream) instead of spawning another.
+    const empty = allThreads.find(
+      (t) => t.title === DEFAULT_THREAD_TITLE && !isThreadStreaming(t.id),
+    );
+    setCurrentId(empty ? empty.id : await createThread());
+  };
 
   return (
     <div className="aui-thread-list-root flex flex-col gap-1">
       <Button
         variant="outline"
-        onClick={() => newThread()}
+        onClick={() => void onNew()}
         className="hover:bg-muted h-9 justify-start gap-2 rounded-lg px-3 text-sm"
       >
         <PlusIcon className="size-4" />
         新建会话
       </Button>
-      {ordered.map((thread) => (
-        <ThreadListItem
-          key={thread.id}
-          id={thread.id}
-          title={thread.title}
-          pinned={thread.pinned}
-        />
-      ))}
+
+      <div className="px-1 pt-2 pb-1">
+        <div className="relative">
+          <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="搜索会话…"
+            aria-label="搜索会话"
+            className="h-8 ps-8 pe-7 text-sm"
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              aria-label="清除搜索"
+              className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2"
+            >
+              <XIcon className="size-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {trimmedSearch && results.length === 0 ? (
+        <p className="text-muted-foreground px-3 py-6 text-center text-sm">无匹配会话</p>
+      ) : (
+        results.map((thread) => (
+          <ThreadListItem
+            key={thread.id}
+            id={thread.id}
+            title={thread.title}
+            pinned={thread.pinned}
+          />
+        ))
+      )}
     </div>
   );
 };
 
-const ThreadListItem: FC<{ id: string; title: string; pinned?: boolean }> = ({
+const ThreadListItem: FC<{ id: Id<"threads">; title: string; pinned: boolean }> = ({
   id,
   title,
   pinned,
 }) => {
-  const active = useChatStore((s) => s.currentId === id);
-  const selectThread = useChatStore((s) => s.selectThread);
-  const deleteThread = useChatStore((s) => s.deleteThread);
-  const togglePin = useChatStore((s) => s.togglePin);
-  const renameThread = useChatStore((s) => s.renameThread);
+  const currentId = useCurrentThread((s) => s.currentId);
+  const setCurrentId = useCurrentThread((s) => s.setCurrentId);
+  const active = currentId === id;
+  const rename = useMutation(api.threads.rename);
+  const togglePin = useMutation(api.threads.togglePin);
+  const remove = useMutation(api.threads.remove);
+  const status = useThreadStatus(id);
+  const running = status === "submitted" || status === "streaming";
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [draft, setDraft] = useState("");
@@ -83,8 +137,17 @@ const ThreadListItem: FC<{ id: string; title: string; pinned?: boolean }> = ({
   };
 
   const submitRename = () => {
-    renameThread(id, draft);
+    void rename({ threadId: id, title: draft });
     setRenameOpen(false);
+  };
+
+  const onDelete = () => {
+    disposeChat(id);
+    // Hand selection back to the placeholder; the assistant picks the next
+    // thread (or creates one) once the deletion lands in the list query.
+    if (active) setCurrentId(null);
+    void remove({ threadId: id });
+    setDeleteOpen(false);
   };
 
   return (
@@ -96,11 +159,17 @@ const ThreadListItem: FC<{ id: string; title: string; pinned?: boolean }> = ({
     >
       <button
         type="button"
-        onClick={() => selectThread(id)}
+        onClick={() => setCurrentId(id)}
         className="flex h-full min-w-0 flex-1 items-center px-3 text-start text-sm"
       >
         {pinned && <PinIcon className="text-muted-foreground me-1.5 size-3.5 shrink-0" />}
         <span className="min-w-0 flex-1 truncate">{title?.trim() || DEFAULT_THREAD_TITLE}</span>
+        {running && (
+          <LoaderCircleIcon
+            className="text-muted-foreground ms-1.5 size-3.5 shrink-0 animate-spin"
+            aria-label="生成中"
+          />
+        )}
       </button>
 
       <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
@@ -118,7 +187,7 @@ const ThreadListItem: FC<{ id: string; title: string; pinned?: boolean }> = ({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-40">
-          <DropdownMenuItem onSelect={() => togglePin(id)}>
+          <DropdownMenuItem onSelect={() => void togglePin({ threadId: id })}>
             {pinned ? <PinOffIcon /> : <PinIcon />}
             {pinned ? "取消置顶" : "置顶会话"}
           </DropdownMenuItem>
@@ -178,13 +247,7 @@ const ThreadListItem: FC<{ id: string; title: string; pinned?: boolean }> = ({
             <DialogClose asChild>
               <Button variant="outline">取消</Button>
             </DialogClose>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                deleteThread(id);
-                setDeleteOpen(false);
-              }}
-            >
+            <Button variant="destructive" onClick={onDelete}>
               <TrashIcon className="size-4" />
               删除
             </Button>

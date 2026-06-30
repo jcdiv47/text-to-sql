@@ -1,16 +1,21 @@
 "use client";
 
-import { useEffect, useState, type FC } from "react";
+import { useEffect, useRef, type FC } from "react";
 import { ShareIcon } from "lucide-react";
-import { UserButton, useAuth } from "@clerk/nextjs";
+import { UserButton } from "@clerk/nextjs";
+import { useConvexAuth, useMutation, useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import { Thread } from "@/components/assistant-ui/thread";
 import { ThreadListSidebar } from "@/components/assistant-ui/threadlist-sidebar";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
-import { chatUserKey, DEFAULT_THREAD_TITLE, setChatUser, useChatStore } from "@/lib/chat-store";
+import { DEFAULT_THREAD_TITLE } from "@/lib/chat-constants";
+import { useCurrentThread } from "@/lib/current-thread";
 
 const ThreadTitle: FC = () => {
-  const title = useChatStore((s) => s.threads.find((t) => t.id === s.currentId)?.title);
+  const currentId = useCurrentThread((s) => s.currentId);
+  const threads = useQuery(api.threads.list);
+  const title = threads?.find((t) => t.id === currentId)?.title;
 
   return (
     <span className="min-w-0 truncate text-sm font-medium">
@@ -42,32 +47,36 @@ const Header: FC = () => {
 };
 
 export const Assistant = () => {
-  const { isLoaded, userId } = useAuth();
-  const currentId = useChatStore((s) => s.currentId);
-  const newThread = useChatStore((s) => s.newThread);
-  const [hydratedUserKey, setHydratedUserKey] = useState<string | null>(null);
+  const { isLoading, isAuthenticated } = useConvexAuth();
+  const threads = useQuery(api.threads.list, isAuthenticated ? {} : "skip");
+  const currentId = useCurrentThread((s) => s.currentId);
+  const setCurrentId = useCurrentThread((s) => s.setCurrentId);
+  const createThread = useMutation(api.threads.create);
+  const creating = useRef(false);
 
-  // Point the persisted (client-only) store at the signed-in user's namespace
-  // before any thread is read or created, so conversations never leak across
-  // Clerk accounts on a shared device. Re-runs whenever the user changes.
+  // Once threads load, guarantee a valid current thread: keep the selection if
+  // it still exists, otherwise open the most recent, or create one if there are
+  // none. The ref guards against a double create under React strict mode.
   useEffect(() => {
-    if (!isLoaded) return;
-    setChatUser(userId);
-    setHydratedUserKey(chatUserKey(userId));
-  }, [isLoaded, userId]);
+    if (!threads) return;
+    if (currentId && threads.some((t) => t.id === currentId)) return;
+    if (threads.length > 0) {
+      setCurrentId(threads[0].id);
+      return;
+    }
+    if (creating.current) return;
+    creating.current = true;
+    void createThread().then((id) => {
+      setCurrentId(id);
+      creating.current = false;
+    });
+  }, [threads, currentId, setCurrentId, createThread]);
 
-  // Ready only once the store has been rehydrated for *this* user. On an account
-  // switch React first re-renders with the new userId but the previous user's
-  // store; gating on the key (not a bare boolean) holds the placeholder for that
-  // frame instead of flashing the previous user's conversations.
-  const ready = hydratedUserKey === chatUserKey(userId);
+  const current = threads?.find((t) => t.id === currentId);
 
-  // Once this user's threads are loaded, guarantee an active thread exists.
-  useEffect(() => {
-    if (ready && !currentId) newThread();
-  }, [ready, currentId, newThread]);
-
-  if (!ready || !currentId) {
+  // Neutral placeholder until Convex auth resolves, threads load, and a valid
+  // current thread exists (also covers the brief window right after a delete).
+  if (isLoading || !threads || !current) {
     return <div className="bg-sidebar h-full" />;
   }
 
@@ -77,7 +86,7 @@ export const Assistant = () => {
       <SidebarInset className="min-h-0 overflow-hidden">
         <Header />
         <main className="flex-1 overflow-hidden">
-          <Thread key={currentId} threadId={currentId} />
+          <Thread key={current.id} threadId={current.id} />
         </main>
       </SidebarInset>
     </SidebarProvider>

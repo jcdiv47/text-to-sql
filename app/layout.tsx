@@ -4,6 +4,7 @@ import { ClerkProvider } from "@clerk/nextjs";
 import { zhCN } from "@clerk/localizations";
 import { dark } from "@clerk/themes";
 import { Geist, Geist_Mono } from "next/font/google";
+import { ConvexClientProvider } from "@/components/convex-client-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import "./globals.css";
 
@@ -37,7 +38,9 @@ export default function RootLayout({
           localization={zhCN}
           appearance={{ baseTheme: dark }}
         >
-          <TooltipProvider key="app">{children}</TooltipProvider>
+          <ConvexClientProvider>
+            <TooltipProvider key="app">{children}</TooltipProvider>
+          </ConvexClientProvider>
         </ClerkProvider>
       </body>
     </html>

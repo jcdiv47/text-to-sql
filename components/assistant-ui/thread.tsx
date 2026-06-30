@@ -1,13 +1,18 @@
 "use client";
 
-import { memo, useCallback, useEffect, useRef, useState, type FC, type ReactNode } from "react";
-import { useChat } from "@ai-sdk/react";
 import {
-  DefaultChatTransport,
-  isToolUIPart,
-  lastAssistantMessageIsCompleteWithToolCalls,
-  type UIMessage,
-} from "ai";
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FC,
+  type ReactNode,
+} from "react";
+import { useChat } from "@ai-sdk/react";
+import { isToolUIPart, type UIMessage } from "ai";
+import { useMutation, useQuery } from "convex/react";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -36,64 +41,75 @@ import {
 import { ChatActionsProvider } from "@/components/assistant-ui/chat-context";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import { cn } from "@/lib/utils";
-import { useChatStore } from "@/lib/chat-store";
-
-// The returned body fully replaces the default request body, so the default
-// fields (messages/id/trigger/messageId) must be passed through explicitly.
-// Compute the date in the user's local timezone ("en-CA" => YYYY-MM-DD) per
-// request so it stays correct even if the tab is left open across midnight.
-const transport = new DefaultChatTransport({
-  api: "/api/chat",
-  prepareSendMessagesRequest: ({ id, messages, trigger, messageId, body }) => ({
-    body: {
-      ...body,
-      id,
-      messages,
-      trigger,
-      messageId,
-      currentDate: new Date().toLocaleDateString("en-CA"),
-    },
-  }),
-});
+import { getChat, hasChat } from "@/lib/chat-registry";
+import { setThreadStatus, useSaveFailed } from "@/lib/chat-status";
 
 const messageText = (message: UIMessage): string =>
   message.parts.map((p) => (p.type === "text" ? p.text : "")).join("");
 
-export const Thread: FC<{ threadId: string }> = ({ threadId }) => {
-  const setThreadMessages = useChatStore((s) => s.setThreadMessages);
-  const [initialMessages] = useState(() => useChatStore.getState().messagesById[threadId] ?? []);
+export const Thread: FC<{ threadId: Id<"threads"> }> = ({ threadId }) => {
+  // Seed the registry chat from the thread's persisted messages. If an instance
+  // already exists it owns the messages, so render at once; otherwise wait for
+  // the query to resolve before creating it. We must NOT seed from `[]` until
+  // the load completes — doing so for a thread that actually has history would
+  // create an empty chat and let the next turn overwrite real messages. A new
+  // thread simply resolves to `[]` quickly, so the wait is a brief placeholder,
+  // not data loss.
+  const rows = useQuery(api.messages.list, { threadId });
+  // Rows are JSON strings (see convex/messages.ts); parse back to UIMessages,
+  // dropping any unparseable row rather than failing the whole thread.
+  const seed = useMemo<UIMessage[]>(
+    () =>
+      (rows ?? []).flatMap((row) => {
+        try {
+          return [JSON.parse(row) as UIMessage];
+        } catch {
+          return [];
+        }
+      }),
+    [rows],
+  );
+  const ready = hasChat(threadId) || rows !== undefined;
+  if (!ready) return <div className="bg-background h-full" />;
+  return <ThreadView threadId={threadId} seed={seed} />;
+};
+
+const ThreadView: FC<{ threadId: Id<"threads">; seed: UIMessage[] }> = ({ threadId, seed }) => {
+  // Bind to the thread's live, registry-owned chat so it keeps streaming after
+  // you switch away, and other sessions keep streaming while you're here.
+  // Persistence is handled by the registry (on finish/error), not here.
+  const [chat] = useState(() => getChat(threadId, seed));
 
   const { messages, sendMessage, regenerate, stop, status, error, addToolResult } = useChat({
-    id: threadId,
-    messages: initialMessages,
-    transport,
+    chat,
     experimental_throttle: 50,
-    // Once the clarify form supplies its tool result, resume the same turn so the
-    // agent can write the SQL — no extra user message.
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
   });
 
   const isRunning = status === "submitted" || status === "streaming";
+  const saveFailed = useSaveFailed(threadId);
 
-  // Persist on settle and on unmount (covers thread switches) without writing
-  // on every streamed delta.
-  const messagesRef = useRef(messages);
-  messagesRef.current = messages;
+  // Mirror this thread's live status into the sidebar store. A stream only ever
+  // starts while its thread is on screen, so the registry's finish/error
+  // handlers are enough to clear it once the turn settles off-screen.
   useEffect(() => {
-    if (status === "ready" || status === "error") setThreadMessages(threadId, messagesRef.current);
-  }, [status, threadId, setThreadMessages]);
-  useEffect(
-    () => () => setThreadMessages(threadId, messagesRef.current),
-    [threadId, setThreadMessages],
-  );
+    setThreadStatus(threadId, status);
+  }, [threadId, status]);
+
+  const titleFromFirstMessage = useMutation(api.threads.titleFromFirstMessage);
 
   const send = useCallback(
     (text: string) => {
       const trimmed = text.trim();
-      if (trimmed) sendMessage({ text: trimmed });
+      if (!trimmed) return;
+      sendMessage({ text: trimmed });
+      // Label the thread from its first question right away, not only once the
+      // assistant replies (persistence otherwise happens on finish).
+      void titleFromFirstMessage({ threadId, text: trimmed });
     },
-    [sendMessage],
+    [sendMessage, titleFromFirstMessage, threadId],
   );
 
   const submitClarification = useCallback(
@@ -175,6 +191,12 @@ export const Thread: FC<{ threadId: string }> = ({ threadId }) => {
             {error && (
               <div className="border-destructive bg-destructive/10 text-destructive dark:bg-destructive/5 rounded-md border p-3 text-sm dark:text-red-200">
                 {error.message || "出错了，请重试。"}
+              </div>
+            )}
+
+            {saveFailed && (
+              <div className="border-destructive bg-destructive/10 text-destructive dark:bg-destructive/5 rounded-md border p-3 text-sm dark:text-red-200">
+                最近一次回复未能保存，刷新后可能丢失。请稍后再发一条消息重试。
               </div>
             )}
 
