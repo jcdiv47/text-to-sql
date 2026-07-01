@@ -4,8 +4,14 @@ import type { MessageListInput } from "@mastra/core/agent/message-list";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 import { sqlAgent } from "../agents/sql-agent";
+import { answerAgent, buildAnswerPrompt } from "../agents/answer-agent";
 import { clarificationQuestionSchema } from "../agents/clarify-agent";
 import { generateClarification, type ClarifyInput } from "../tools/clarify-request";
+import {
+  answerInputSchema,
+  buildAnswerInput,
+  type CapturedSqlResult,
+} from "../tools/finalize-sql-answer";
 
 const sqlWorkflowInputSchema = z.object({
   messages: z.custom<MessageListInput>(
@@ -18,6 +24,16 @@ const sqlWorkflowInputSchema = z.object({
 
 const sqlWorkflowOutputSchema = z.object({
   text: z.string(),
+  usage: z.record(z.string(), z.unknown()).optional(),
+});
+
+// run-sql-agent hands one of two shapes to run-answer-agent: `brief` when the SQL
+// agent finalized via finalize-sql-answer (the normal path — the answer agent
+// renders it), or `text` as a fallback if a turn ever completes without a brief
+// (the answer agent passes it through unchanged).
+const sqlAgentStepOutputSchema = z.object({
+  text: z.string().optional(),
+  brief: answerInputSchema.optional(),
   usage: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -90,18 +106,28 @@ const applyClarifyAnswers = (
     }),
   }));
 
-// The agent registers clarify-request under the key `clarifyRequest`, so stream
-// chunks name the tool that way; match leniently like the frontend's
-// normalizeToolName so either the key or the tool id is detected.
+// The agent registers tools by camelCase key, so stream chunks name them that way
+// (e.g. `clarifyRequest`, `executeSql`, `finalizeSqlAnswer`), not by the tool id.
+// Match leniently like the frontend's normalizeToolName so either form is detected.
+const normalizeToolName = (toolName: unknown): string =>
+  typeof toolName === "string" ? toolName.replace(/[-_]/g, "").toLowerCase() : "";
+
 const isClarifyTool = (toolName: unknown): boolean =>
-  typeof toolName === "string" && toolName.replace(/[-_]/g, "").toLowerCase() === "clarifyrequest";
+  normalizeToolName(toolName) === "clarifyrequest";
+const isFinalizeTool = (toolName: unknown): boolean =>
+  normalizeToolName(toolName) === "finalizesqlanswer";
+const isExecuteSqlTool = (toolName: unknown): boolean =>
+  normalizeToolName(toolName) === "executesql";
+
+const isTextChunk = (type: unknown): boolean =>
+  type === "text-start" || type === "text-delta" || type === "text-end";
 
 const runSqlAgentStep = createStep({
   id: "run-sql-agent",
   description:
-    "Runs the SQL agent. Suspends the workflow when the agent needs clarification, then resumes the same turn with the user's answers.",
+    "Runs the SQL agent. Suspends the workflow when the agent needs clarification, then resumes the same turn with the user's answers. Emits a structured answer brief when the agent finalizes via finalize-sql-answer.",
   inputSchema: sqlWorkflowInputSchema,
-  outputSchema: sqlWorkflowOutputSchema,
+  outputSchema: sqlAgentStepOutputSchema,
   suspendSchema,
   resumeSchema,
   stateSchema: stepStateSchema,
@@ -146,19 +172,47 @@ const runSqlAgentStep = createStep({
     let usage: Record<string, unknown> | undefined;
     let clarifyCall: { toolCallId: string; args: ClarifyInput } | undefined;
     let clarifyToolCallId: string | undefined;
+    // Captured for the answer brief (finalize path) so the model never has to
+    // transcribe the rows it just fetched; the last execute-sql result wins.
+    let finalizeCall: { toolCallId: string; args: unknown } | undefined;
+    let finalizeToolCallId: string | undefined;
+    let lastSqlResult: CapturedSqlResult | undefined;
+    // The answer agent owns the final reply, so the SQL agent's own prose is
+    // buffered rather than streamed live. It is discarded once finalize-sql-answer
+    // arrives (the answer agent produces the real reply) and flushed only in the
+    // no-finalize fallback below. Without this, a stray preamble emitted before the
+    // terminal handoff would show as a partial answer and then be duplicated by the
+    // answer agent's response.
+    const bufferedTextChunks: Parameters<typeof writer.write>[0][] = [];
 
-    // clarify-request has no `execute`, so the turn ends with that call pending.
-    // Its form renders from the workflow suspend payload, so every chunk for that
-    // call is kept out of the UI stream to avoid double-rendering it.
+    // clarify-request and finalize-sql-answer have no `execute`, so the turn ends
+    // with that call pending. clarify renders from the suspend payload and
+    // finalize is an internal handoff, so both calls' chunks are kept out of the
+    // UI stream to avoid rendering them as tool cards.
     for await (const chunk of agentStream.fullStream) {
       const payload = (chunk as { payload?: Record<string, unknown> }).payload;
       const toolCallId = payload?.toolCallId as string | undefined;
       const toolName = payload?.toolName as string | undefined;
 
       if (isClarifyTool(toolName) && toolCallId) clarifyToolCallId = toolCallId;
+      if (isFinalizeTool(toolName) && toolCallId) finalizeToolCallId = toolCallId;
 
       if (chunk.type === "tool-call" && isClarifyTool(toolName)) {
         clarifyCall = { toolCallId: toolCallId as string, args: payload?.args as ClarifyInput };
+      }
+
+      if (chunk.type === "tool-call" && isFinalizeTool(toolName)) {
+        finalizeCall = { toolCallId: toolCallId as string, args: payload?.args };
+      }
+
+      if (chunk.type === "tool-result" && isExecuteSqlTool(toolName)) {
+        const result = payload?.result as { rows?: unknown; rowCount?: unknown } | undefined;
+        if (result && Array.isArray(result.rows)) {
+          lastSqlResult = {
+            rows: result.rows as Record<string, unknown>[],
+            rowCount: typeof result.rowCount === "number" ? result.rowCount : result.rows.length,
+          };
+        }
       }
 
       if (chunk.type === "finish" || chunk.type === "step-finish") {
@@ -167,8 +221,19 @@ const runSqlAgentStep = createStep({
         usage = stepUsage ?? (payload?.usage as Record<string, unknown> | undefined) ?? usage;
       }
 
-      const isClarifyChunk = toolCallId !== undefined && toolCallId === clarifyToolCallId;
-      if (!isClarifyChunk) await writer.write(chunk);
+      const isSuppressedCall =
+        toolCallId !== undefined &&
+        (toolCallId === clarifyToolCallId || toolCallId === finalizeToolCallId);
+      if (isSuppressedCall) continue;
+
+      // Hold back the agent's prose (see bufferedTextChunks); stream everything
+      // else — reasoning and the introspect/execute/data-gap tool cards — live.
+      if (isTextChunk(chunk.type)) {
+        bufferedTextChunks.push(chunk);
+        continue;
+      }
+
+      await writer.write(chunk);
     }
 
     // The agent asked for clarification: buffer this turn (so resume can replay
@@ -185,16 +250,55 @@ const runSqlAgentStep = createStep({
       return await suspend({ questions });
     }
 
+    // The agent finalized: hand the structured brief (model-authored fields plus
+    // the captured rows) to the answer agent. Any buffered SQL-agent prose is
+    // dropped — the answer agent writes the user-facing reply from the brief.
+    if (finalizeCall) {
+      return { brief: buildAnswerInput(finalizeCall.args, lastSqlResult), usage };
+    }
+
+    // Fallback: the agent replied without calling finalize-sql-answer. Flush its
+    // buffered prose so the reply still reaches the UI, then pass the text through.
+    for (const chunk of bufferedTextChunks) await writer.write(chunk);
     return { text: await agentStream.text, usage };
+  },
+});
+
+const runAnswerAgentStep = createStep({
+  id: "run-answer-agent",
+  description:
+    "Writes the final user-facing reply from the SQL layer's structured brief. Falls back to passing the SQL agent's own text through if a turn ever completes without a brief.",
+  inputSchema: sqlAgentStepOutputSchema,
+  outputSchema: sqlWorkflowOutputSchema,
+  execute: async ({ inputData, requestContext, abortSignal, writer }) => {
+    const { text, brief, usage } = inputData;
+
+    // Fallback: no brief means the SQL agent replied without finalizing; its text
+    // was already streamed, so just carry it through as the workflow output.
+    if (!brief) {
+      return { text: text ?? "", usage };
+    }
+
+    const answerStream = await answerAgent.stream(buildAnswerPrompt(brief), {
+      requestContext,
+      abortSignal,
+    });
+
+    for await (const chunk of answerStream.fullStream) {
+      await writer.write(chunk);
+    }
+
+    return { text: await answerStream.text, usage };
   },
 });
 
 export const sqlWorkflow = createWorkflow({
   id: "sql-workflow",
   description:
-    "Text-to-SQL pipeline. Runs the SQL agent and pauses for clarification via native workflow suspend/resume.",
+    "Text-to-SQL pipeline. Runs the SQL agent (pausing for clarification via native workflow suspend/resume), then renders the final answer with the answer agent from a structured brief.",
   inputSchema: sqlWorkflowInputSchema,
   outputSchema: sqlWorkflowOutputSchema,
 })
   .then(runSqlAgentStep)
+  .then(runAnswerAgentStep)
   .commit();

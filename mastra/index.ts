@@ -5,6 +5,7 @@ import { Observability, SamplingStrategyType, SensitiveDataFilter } from "@mastr
 import { PostgresStore } from "@mastra/pg";
 import { businessKnowledgeAgent } from "./agents/business-knowledge-agent";
 import { sqlAgent } from "./agents/sql-agent";
+import { answerAgent } from "./agents/answer-agent";
 import { sqlWorkflow } from "./workflows/sql-workflow";
 
 const observability = new Observability({
@@ -38,7 +39,7 @@ const storage = process.env.MASTRA_DATABASE_URL
   : undefined;
 
 export const mastra = new Mastra({
-  agents: { sqlAgent, businessKnowledgeAgent },
+  agents: { sqlAgent, answerAgent, businessKnowledgeAgent },
   workflows: { sqlWorkflow },
   ...(storage ? { storage } : {}),
   logger: new PinoLogger({

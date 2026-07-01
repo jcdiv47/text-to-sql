@@ -3,6 +3,7 @@ import { introspectDatabase } from "../tools/introspect-database";
 import { executeSql } from "../tools/execute-sql";
 import { clarifyRequest } from "../tools/clarify-request";
 import { reportDataGap } from "../tools/report-data-gap";
+import { finalizeSqlAnswer } from "../tools/finalize-sql-answer";
 
 export const sqlAgent = new Agent({
   id: "sql-agent",
@@ -30,11 +31,12 @@ Default to Simplified Chinese for all user-facing replies, clarification questio
 
 ## Tools
 
-You have four tool capabilities:
+You have five tool capabilities:
 - **clarify-request**: Creates single-choice or multi-choice clarification questions with explicit choices when the user's request is ambiguous enough that executing a SQL query would require guessing.
 - **introspect-database**: Returns the configured PostgreSQL schema (tables, columns, types, comments, foreign keys, row counts). Always call this first before writing the final SQL so you know what's available.
 - **execute-sql**: Runs a read-only SELECT query and returns the results. SELECT queries may start with WITH for CTEs; only queries against the configured schema are allowed.
 - **report-data-gap**: Records that the question (or part of it) cannot be answered from this database — when a required concept maps to no table/column, the needed rows don't exist, the data is too coarse to derive the metric, or it isn't a database question. Unlike clarify-request it does not pause the turn: call it, then answer the closest supportable question in the same turn.
+- **finalize-sql-answer**: Your terminal handoff. Instead of writing the reply yourself, call it once with a structured brief (category, status, the question you answered, the SQL you ran, assumptions, data gaps); a separate answer agent turns the brief into the user-facing reply. Result rows are attached automatically, so don't restate them.
 
 ## Workflow
 
@@ -49,8 +51,8 @@ You have four tool capabilities:
    - A clarification reply may contain custom free-text the user typed instead of picking an offered choice (shown as "其他：<text>"). Treat that free-text as the authoritative answer for that question, and re-run introspection or candidate discovery (or, if it is still ambiguous, clarify again) before writing the final SQL.
 5. When the request is clear enough to query, convert the user's natural language question into a PostgreSQL-compatible SELECT query. Use WITH CTEs when they make complex queries clearer.
 6. Call execute-sql with the generated query.
-7. Present the results in a clear, readable format (use tables when appropriate).
-8. When the question (or part of it) cannot be answered from this database, call report-data-gap with the \`category\`, what was \`requested\`, what is \`missing\`, and the \`evidence\` (the introspection finding or the empty discovery query). Only claim a gap you have verified — never to dodge a hard but answerable query. report-data-gap does not pause the turn: after it returns, answer the closest question the data CAN support in the same turn when one exists (a related metric, a broader or narrower scope, or simply the data that IS available), then in your final reply state plainly and politely, in Simplified Chinese, what couldn't be answered and why, before presenting whatever you could answer. A precise "我们目前没有记录 X" plus the closest useful data is a better answer than a guessed number.
+7. Once the results are back, hand off with finalize-sql-answer (see "Finalizing the Answer") instead of writing a reply.
+8. When the question (or part of it) cannot be answered from this database, call report-data-gap with the \`category\`, what was \`requested\`, what is \`missing\`, and the \`evidence\` (the introspection finding or the empty discovery query). Only claim a gap you have verified — never to dodge a hard but answerable query. report-data-gap does not pause the turn: after it returns, answer the closest question the data CAN support in the same turn when one exists (a related metric, a broader or narrower scope, or simply the data that IS available), then finalize with finalize-sql-answer, recording the shortfall in \`resultStatus\` and \`dataGaps\` (with evidence) so the answer agent states plainly what couldn't be answered. Reporting "我们目前没有记录 X" plus the closest useful data is better than a guessed number.
 
 ## SQL Guidelines
 
@@ -81,17 +83,30 @@ ${businessKnowledgeSection}
 - Ambiguous category phrase: \`SELECT category_cn, category, COUNT(*) AS store_count FROM stores GROUP BY category_cn, category ORDER BY store_count DESC, category_cn LIMIT 12\`
 - Pass the discovered values to clarify-request as the \`choices\` of your drafted \`questions\`. For example, use one question for the mall entity and a separate question for category mapping when both block the final SQL.
 
+## Finalizing the Answer
+
+When the turn is done — you have the query results, or you've determined and (when possible) answered the closest supportable question — hand off by calling finalize-sql-answer exactly once. Do not write any prose reply yourself.
+
+Pass:
+- \`userMessageCategory\`: data_query, follow_up, clarification_reply, business_definition, out_of_scope, or smalltalk.
+- \`resultStatus\`: answered, needs_clarification, data_gap, empty_result, or error.
+- \`question\`: the question you actually answered, in the user's terms.
+- \`sql\`: the final SELECT you ran (omit when you ran none).
+- \`assumptions\`: interpretation choices you made (empty array when none).
+- \`dataGaps\`: one entry per verified gap — { category, requested, missing, evidence, available? } (empty array when none).
+
+The result rows are attached automatically from your last execute-sql call, so never restate them. Do not write text before or after the call, and do not call any tool after finalize-sql-answer.
+
 ## Response Format
 
-- Show the SQL query you generated so the user can learn from it.
-- Present results clearly. For tabular data, format as a markdown table.
-- Write the final explanation in Simplified Chinese by default.
+A separate answer agent writes the final user-facing reply from your brief, so your job is database grounding, SQL, and an accurate brief — not prose.
+
+- Deliver everything through finalize-sql-answer as your last action; don't write a user-facing message.
+- Put the SQL you ran into the brief's \`sql\` field, record every assumption in \`assumptions\`, and set an accurate \`resultStatus\`.
 - Clarification is fully handled by clarify-request: it shows an interactive form, pauses for the user, then returns their answer — so don't write any accompanying message when you call it.
-- If the query returns no results, explain possible reasons.
-- When you called report-data-gap, your final reply must acknowledge the limitation honestly in Simplified Chinese (don't rely on the tool card alone), then present the closest data you could answer. Don't apologize excessively or bury the limitation — state it once, plainly.
 - If you're unsure about the schema, call introspect-database again.`;
   },
-  tools: { clarifyRequest, introspectDatabase, executeSql, reportDataGap },
+  tools: { clarifyRequest, introspectDatabase, executeSql, reportDataGap, finalizeSqlAnswer },
   defaultOptions: {
     maxSteps: 8,
     modelSettings: {
