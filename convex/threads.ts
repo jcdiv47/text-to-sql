@@ -1,6 +1,7 @@
 import { v } from "convex/values";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
+import { messageSearchText, toSearchTokens } from "./extract";
 import { requireOwnedThread, requireUser } from "./helpers";
 
 export const DEFAULT_TITLE = "新对话";
@@ -21,6 +22,36 @@ const toSummary = (t: Doc<"threads">) => ({
   pinned: t.pinned,
   updatedAt: t.updatedAt,
 });
+
+// How much context to show on either side of a search match in the snippet.
+const SNIPPET_RADIUS = 24;
+
+/** The match plus its neighborhood, pre-split so the client can highlight the
+ *  matched run without re-scanning. `undefined` when the raw query doesn't occur
+ *  literally in the message (e.g. a fuzzy bigram-only hit). */
+type Snippet = { before: string; match: string; after: string };
+
+/** Extract a highlight snippet for `query` from a stored message (JSON string).
+ *  Uses the natural message text, not the bigram-shingled index field. */
+const buildSnippet = (messageJson: unknown, query: string): Snippet | undefined => {
+  let parsed: unknown;
+  try {
+    parsed = typeof messageJson === "string" ? JSON.parse(messageJson) : messageJson;
+  } catch {
+    return undefined;
+  }
+  const text = messageSearchText(parsed).replace(/\s+/g, " ").trim();
+  const idx = text.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return undefined;
+  const end = idx + query.length;
+  const from = Math.max(0, idx - SNIPPET_RADIUS);
+  const to = Math.min(text.length, end + SNIPPET_RADIUS);
+  return {
+    before: (from > 0 ? "…" : "") + text.slice(from, idx),
+    match: text.slice(idx, end),
+    after: text.slice(end, to) + (to < text.length ? "…" : ""),
+  };
+};
 
 /** The caller's threads, pinned first then most-recently-updated. Unfiltered —
  *  used to pick/keep the active thread regardless of any sidebar filtering. */
@@ -52,19 +83,39 @@ export const browse = query({
         .query("threads")
         .withIndex("by_user", (q) => q.eq("userId", userId))
         .collect();
-      return sortThreads(all).map(toSummary);
+      return sortThreads(all).map((t) => ({
+        ...toSummary(t),
+        snippet: undefined as Snippet | undefined,
+      }));
     }
 
-    // Search messages, then load the distinct owning threads.
+    // Search messages, then load the distinct owning threads. Bigram-tokenize the
+    // query to match the index (see toSearchTokens).
     const hits = await ctx.db
       .query("messages")
-      .withSearchIndex("search_text", (q) => q.search("searchText", search).eq("userId", userId))
+      .withSearchIndex("search_text", (q) =>
+        q.search("searchText", toSearchTokens(search)).eq("userId", userId),
+      )
       .take(SEARCH_HIT_LIMIT);
-    const ids = [...new Set(hits.map((h) => h.threadId))];
-    const loaded = await Promise.all(ids.map((id) => ctx.db.get(id)));
+
+    // Hits come back ranked; keep first-seen order and take each thread's best
+    // (highest-ranked) snippet-yielding message.
+    const snippetByThread = new Map<Id<"threads">, Snippet | undefined>();
+    const orderedIds: Id<"threads">[] = [];
+    for (const hit of hits) {
+      if (!snippetByThread.has(hit.threadId)) orderedIds.push(hit.threadId);
+      if (!snippetByThread.get(hit.threadId)) {
+        snippetByThread.set(hit.threadId, buildSnippet(hit.message, search));
+      }
+    }
+
+    const loaded = await Promise.all(orderedIds.map((id) => ctx.db.get(id)));
     const threads = loaded.filter((t): t is Doc<"threads"> => t !== null && t.userId === userId);
 
-    return sortThreads(threads).map(toSummary);
+    return sortThreads(threads).map((t) => ({
+      ...toSummary(t),
+      snippet: snippetByThread.get(t._id),
+    }));
   },
 });
 

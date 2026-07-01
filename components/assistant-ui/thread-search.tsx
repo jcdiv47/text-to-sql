@@ -1,7 +1,7 @@
 "use client";
 
 import { useDeferredValue, useEffect, useState, type FC } from "react";
-import { SearchIcon } from "lucide-react";
+import { MessageSquareIcon, SearchIcon } from "lucide-react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -102,14 +102,26 @@ export const ThreadSearch: FC = () => {
                   key={thread.id}
                   type="button"
                   onClick={() => onSelect(thread.id)}
-                  className="hover:bg-muted flex w-full items-center gap-2 rounded-md px-3 py-2 text-start text-sm"
+                  className="hover:bg-muted flex w-full items-start gap-2.5 rounded-md px-3 py-2 text-start"
                 >
-                  <span className="min-w-0 flex-1 truncate">
-                    {thread.title?.trim() || DEFAULT_THREAD_TITLE}
-                  </span>
-                  <span className="text-muted-foreground shrink-0 text-xs">
-                    {relativeDay(thread.updatedAt)}
-                  </span>
+                  <MessageSquareIcon className="text-muted-foreground mt-0.5 size-4 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate text-sm">
+                        {thread.title?.trim() || DEFAULT_THREAD_TITLE}
+                      </span>
+                      <span className="text-muted-foreground shrink-0 text-xs">
+                        {relativeDay(thread.updatedAt)}
+                      </span>
+                    </div>
+                    {thread.snippet && (
+                      <p className="text-muted-foreground truncate text-xs">
+                        {thread.snippet.before}
+                        <span className="text-foreground font-medium">{thread.snippet.match}</span>
+                        {thread.snippet.after}
+                      </p>
+                    )}
+                  </div>
                 </button>
               ))
             )}

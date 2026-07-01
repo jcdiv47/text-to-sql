@@ -1,6 +1,7 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
-import { messageSearchText } from "./extract";
+import { internal } from "./_generated/api";
+import { internalAction, internalMutation, mutation, query } from "./_generated/server";
+import { messageSearchText, toSearchTokens } from "./extract";
 import { requireUser } from "./helpers";
 
 /**
@@ -70,7 +71,7 @@ export const replace = mutation({
       // Skip anything without a usable id rather than key a row on `undefined`.
       if (typeof messageId !== "string") continue;
       incomingIds.add(messageId);
-      const searchText = messageSearchText(parsed);
+      const searchText = toSearchTokens(messageSearchText(parsed), true);
       const row = byId.get(messageId);
       if (row) await ctx.db.patch(row._id, { message: json, order, searchText });
       else
@@ -89,5 +90,49 @@ export const replace = mutation({
     }
 
     await ctx.db.patch(threadId, { updatedAt: Date.now() });
+  },
+});
+
+/**
+ * One-time backfill: recompute `searchText` for one page of messages with the
+ * current tokenizer. Rows written before bigram tokenization hold the old
+ * whitespace form and won't match bigram queries until re-indexed. Driven by
+ * {@link reindexSearchText}; internal so only the CLI/dashboard can run it.
+ */
+export const reindexSearchTextPage = internalMutation({
+  args: { cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { cursor }) => {
+    const page = await ctx.db.query("messages").paginate({ cursor, numItems: 200 });
+    for (const row of page.page) {
+      let parsed: unknown;
+      try {
+        parsed = typeof row.message === "string" ? JSON.parse(row.message) : row.message;
+      } catch {
+        continue;
+      }
+      const searchText = toSearchTokens(messageSearchText(parsed), true);
+      if (searchText !== row.searchText) await ctx.db.patch(row._id, { searchText });
+    }
+    return { cursor: page.continueCursor, isDone: page.isDone };
+  },
+});
+
+/** Re-indexes every message's search text. Run once after deploying the bigram
+ *  tokenizer: `npx convex run messages:reindexSearchText`. */
+export const reindexSearchText = internalAction({
+  args: {},
+  handler: async (ctx): Promise<{ pages: number }> => {
+    let cursor: string | null = null;
+    let pages = 0;
+    for (;;) {
+      const res: { cursor: string; isDone: boolean } = await ctx.runMutation(
+        internal.messages.reindexSearchTextPage,
+        { cursor },
+      );
+      pages++;
+      if (res.isDone) break;
+      cursor = res.cursor;
+    }
+    return { pages };
   },
 });
