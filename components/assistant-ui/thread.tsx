@@ -39,7 +39,7 @@ import {
   getSuspendedClarify,
   isClarifyToolPart,
 } from "@/components/assistant-ui/sql-tools";
-import { ChatActionsProvider } from "@/components/assistant-ui/chat-context";
+import { ChatActionsProvider, useChatActions } from "@/components/assistant-ui/chat-context";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { api } from "@/convex/_generated/api";
@@ -113,6 +113,18 @@ const ThreadView: FC<{ threadId: Id<"threads">; seed: UIMessage[] }> = ({ thread
     [sendMessage, titleFromFirstMessage, threadId],
   );
 
+  // Edit an existing user message in place. `sendMessage` with a `messageId`
+  // truncates the thread back to that message, replaces its text (keeping the
+  // same id), and re-runs the turn from there.
+  const editMessage = useCallback(
+    (messageId: string, text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      sendMessage({ text: trimmed, messageId });
+    },
+    [sendMessage],
+  );
+
   // Resume the suspended SQL workflow with the user's clarification choices. The
   // answer renders as a user turn; the server ignores chat history on resume and
   // continues the run from its Postgres snapshot (see chat-registry transport).
@@ -144,7 +156,7 @@ const ThreadView: FC<{ threadId: Id<"threads">; seed: UIMessage[] }> = ({ thread
   const { scrollRef, onScroll, atBottom, scrollToBottom } = useAutoScroll(messages);
 
   return (
-    <ChatActionsProvider value={{ sendMessage: send, resumeClarification, isRunning }}>
+    <ChatActionsProvider value={{ sendMessage: send, editMessage, resumeClarification, isRunning }}>
       <div
         className="aui-thread-root bg-background @container flex h-full flex-col"
         style={{
@@ -455,16 +467,109 @@ const StandaloneIndicator: FC = () => (
 
 const UserMessageImpl: FC<{ message: UIMessage }> = ({ message }) => {
   const text = messageText(message);
+  const { editMessage, isRunning } = useChatActions();
+  const [editing, setEditing] = useState(false);
+
+  if (editing) {
+    return (
+      <UserMessageEditor
+        initialText={text}
+        disabled={isRunning}
+        onCancel={() => setEditing(false)}
+        onSend={(next) => {
+          setEditing(false);
+          editMessage(message.id, next);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="fade-in slide-in-from-bottom-1 animate-in mx-auto flex w-full max-w-(--thread-max-width) justify-end px-2 duration-150">
-      <div className="bg-muted text-foreground max-w-[85%] rounded-xl px-4 py-2 whitespace-pre-wrap wrap-break-word">
-        {text}
+      <div className="group flex max-w-[85%] flex-col items-end">
+        <div className="bg-muted text-foreground rounded-xl px-4 py-2 whitespace-pre-wrap wrap-break-word">
+          {text}
+        </div>
+        <UserActionBar text={text} onEdit={() => setEditing(true)} disabled={isRunning} />
       </div>
     </div>
   );
 };
 
 const UserMessage = memo(UserMessageImpl);
+
+const UserActionBar: FC<{ text: string; onEdit: () => void; disabled: boolean }> = ({
+  text,
+  onEdit,
+  disabled,
+}) => {
+  const { copied, copy } = useCopy(text);
+
+  return (
+    <div className="text-muted-foreground flex gap-1 pt-1.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+      <TooltipIconButton tooltip="复制" onClick={copy}>
+        {copied ? <CheckIcon /> : <CopyIcon />}
+      </TooltipIconButton>
+      <TooltipIconButton tooltip="编辑" onClick={onEdit} disabled={disabled}>
+        <PencilLineIcon />
+      </TooltipIconButton>
+    </div>
+  );
+};
+
+const UserMessageEditor: FC<{
+  initialText: string;
+  disabled: boolean;
+  onCancel: () => void;
+  onSend: (text: string) => void;
+}> = ({ initialText, disabled, onCancel, onSend }) => {
+  const [value, setValue] = useState(initialText);
+
+  const submit = () => {
+    if (disabled) return;
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    onSend(trimmed);
+  };
+
+  return (
+    <div className="fade-in animate-in mx-auto flex w-full max-w-(--thread-max-width) justify-end px-2 duration-150">
+      <div className="bg-muted flex w-full max-w-[85%] flex-col gap-2 rounded-xl px-3 py-2">
+        <textarea
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              submit();
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              onCancel();
+            }
+          }}
+          rows={1}
+          autoFocus
+          aria-label="编辑消息"
+          className="field-sizing-content max-h-60 min-h-8 w-full resize-none bg-transparent px-1 py-0.5 text-base outline-none"
+        />
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={onCancel} className="rounded-full">
+            取消
+          </Button>
+          <Button
+            size="sm"
+            onClick={submit}
+            disabled={disabled || !value.trim()}
+            className="rounded-full"
+          >
+            发送
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 type AssistantMessageProps = {
   message: UIMessage;
@@ -590,13 +695,12 @@ const AssistantMessageImpl: FC<AssistantMessageProps> = ({
 
 const AssistantMessage = memo(AssistantMessageImpl);
 
-const AssistantActionBar: FC<{ text: string; onRegenerate: () => void }> = ({
-  text,
-  onRegenerate,
-}) => {
+// Copy `text` to the clipboard, briefly reflecting success so the button can
+// swap to a check mark. Shared by the user and assistant action bars.
+function useCopy(text: string) {
   const [copied, setCopied] = useState(false);
 
-  const copy = () => {
+  const copy = useCallback(() => {
     if (!text || typeof navigator === "undefined" || !navigator.clipboard) return;
     navigator.clipboard.writeText(text).then(
       () => {
@@ -605,7 +709,16 @@ const AssistantActionBar: FC<{ text: string; onRegenerate: () => void }> = ({
       },
       () => {},
     );
-  };
+  }, [text]);
+
+  return { copied, copy };
+}
+
+const AssistantActionBar: FC<{ text: string; onRegenerate: () => void }> = ({
+  text,
+  onRegenerate,
+}) => {
+  const { copied, copy } = useCopy(text);
 
   return (
     <div className="text-muted-foreground flex gap-1">

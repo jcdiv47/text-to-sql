@@ -12,6 +12,11 @@ export type ChatActions = {
   /** Sends a new user message into the current thread. */
   sendMessage: (text: string) => void;
   /**
+   * Edits an existing user message: truncates the thread back to that message,
+   * replaces its text, and re-runs the turn from there.
+   */
+  editMessage: (messageId: string, text: string) => void;
+  /**
    * Resumes a suspended SQL workflow run with the user's clarification choices,
    * continuing the same logical turn server-side.
    */
