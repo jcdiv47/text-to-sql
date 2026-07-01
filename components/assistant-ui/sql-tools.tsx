@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type FC, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FC, type ReactNode } from "react";
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -278,7 +278,7 @@ const SqlResultTable: FC<{ rows: Record<string, unknown>[] }> = ({ rows }) => {
       </table>
       {hidden > 0 && (
         <div className="border-border/60 text-muted-foreground border-t px-3.5 py-1.5 font-mono text-[11px]">
-          另有 {hidden} 行
+          省略 {hidden} 行
         </div>
       )}
     </div>
@@ -438,13 +438,40 @@ const isMultiClarifyQuestion = (type: ClarifyQuestion["type"]) => type === "mult
 type ClarifyAnswerEntry = { question: string; answer: string };
 
 /**
- * Renders the clarify exchange for one clarify-request tool part. clarify-request
- * is a client-side (no-execute) tool, so it moves through three visible phases:
- *   - drafting questions (input streaming) → a compact "preparing…" spinner;
- *   - `input-available` with questions → the interactive choice form;
- *   - answered (`output-available`) → a read-only summary of the choice.
- * The questions live on the tool part's (display-transformed) `input`, and the
- * chosen answers on its `output` once the form supplies the tool result.
+ * Read-only view of a clarify-request that is still pending on a thread persisted
+ * before the workflow-suspend migration. The old client-tool resume path is gone
+ * (new clarifications render {@link WorkflowClarifyForm} from the suspended run),
+ * so these can't be answered here — show the questions and prompt a re-ask.
+ */
+const LegacyClarifyReadOnly: FC<{ questions: ClarifyQuestion[] }> = ({ questions }) => (
+  <div className="border-border/80 bg-muted/30 my-3 w-full space-y-3 rounded-xl border p-4 opacity-75">
+    <div className="text-muted-foreground flex items-center gap-2 text-xs font-medium">
+      <HelpCircleIcon className="size-3.5 shrink-0" />
+      <span>这条追问来自旧版本，无法在此回答 — 请重新发起提问。</span>
+    </div>
+    {questions.map((q) => (
+      <div key={q.id} className="space-y-1.5">
+        <p className="text-sm font-medium">{q.question}</p>
+        <div className="flex flex-wrap gap-1.5">
+          {q.choices.map((c) => (
+            <span
+              key={c.id}
+              className="border-border/60 text-muted-foreground rounded-full border px-2.5 py-1 text-xs"
+            >
+              {c.label}
+            </span>
+          ))}
+        </div>
+      </div>
+    ))}
+  </div>
+);
+
+/**
+ * Renders a clarify-request tool part from a thread persisted before the
+ * workflow-suspend migration. Answered parts show a read-only summary; a still
+ * pending part is shown read-only (it can no longer resume — re-ask instead).
+ * New clarifications never produce a tool part; they use {@link WorkflowClarifyForm}.
  */
 export const ClarifyExchange: FC<{ part: AnyToolUIPart }> = ({ part }) => {
   const state = (part as { state: ToolState }).state;
@@ -456,13 +483,7 @@ export const ClarifyExchange: FC<{ part: AnyToolUIPart }> = ({ part }) => {
   }
 
   if (state === "input-available" && questions.length > 0) {
-    return (
-      <ClarifyForm
-        tool={getToolName(part)}
-        toolCallId={(part as { toolCallId: string }).toolCallId}
-        questions={questions}
-      />
-    );
+    return <LegacyClarifyReadOnly questions={questions} />;
   }
 
   // input-streaming, or input-available before the sub-agent's questions land.
@@ -474,19 +495,41 @@ export const ClarifyExchange: FC<{ part: AnyToolUIPart }> = ({ part }) => {
   );
 };
 
-const ClarifyForm: FC<{ tool: string; toolCallId: string; questions: ClarifyQuestion[] }> = ({
-  tool,
-  toolCallId,
-  questions,
-}) => {
-  const { submitClarification, isRunning } = useChatActions();
+const ClarifyForm: FC<{
+  questions: ClarifyQuestion[];
+  onSubmit: (answers: ClarifyAnswerEntry[]) => void;
+}> = ({ questions, onSubmit }) => {
+  const { isRunning } = useChatActions();
   // Model-choice picks and the injected free-text "Other" option are tracked in
   // separate state, so a model choice id (model-controlled and unconstrained —
   // often arbitrary Unicode) can never be mistaken for an "Other" sentinel.
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [otherSelected, setOtherSelected] = useState<Record<string, boolean>>({});
   const [otherText, setOtherText] = useState<Record<string, string>>({});
-  const [submitted, setSubmitted] = useState(false);
+  // Re-entrancy guard for submit. `isRunning` (chat status) lags a submit by a
+  // render, so a fast double-click / click-then-Enter could fire `submit` twice
+  // before it flips — and on the workflow-resume path each fire appends a user
+  // turn and resumes the *same* run. `submitLatch` latches synchronously to close
+  // that window; `submitting` disables the UI immediately. We release both only
+  // after the resume has actually gone in flight and settled, so a failed resume
+  // (its form stays mounted) is still retryable.
+  const submitLatch = useRef(false);
+  const enteredRun = useRef(false);
+  const [submitting, setSubmitting] = useState(false);
+  const busy = submitting || isRunning;
+
+  useEffect(() => {
+    if (!submitLatch.current) return;
+    if (isRunning) {
+      enteredRun.current = true;
+    } else if (enteredRun.current) {
+      // The resume ran and settled. On success this form unmounts; on failure it
+      // stays mounted, so release the guard to keep the retry path open.
+      enteredRun.current = false;
+      submitLatch.current = false;
+      setSubmitting(false);
+    }
+  }, [isRunning]);
 
   // Single-choice: a model pick and the "Other" pick are mutually exclusive.
   const toggle = (q: ClarifyQuestion, choiceId: string) => {
@@ -524,9 +567,10 @@ const ClarifyForm: FC<{ tool: string; toolCallId: string; questions: ClarifyQues
   const allAnswered = questions.length > 0 && questions.every(isAnswered);
 
   const submit = () => {
-    if (submitted || !allAnswered) return;
-    setSubmitted(true);
-    // Supply the choices as the clarify-request tool result. One entry per
+    if (submitLatch.current || isRunning || !allAnswered) return;
+    submitLatch.current = true;
+    setSubmitting(true);
+    // Supply the choices as the resume answers. One entry per
     // question (in order); predefined picks become their labels, and an "Other"
     // pick contributes the typed text as "其他：<text>" so the agent can tell the
     // answer was off-menu.
@@ -540,7 +584,7 @@ const ClarifyForm: FC<{ tool: string; toolCallId: string; questions: ClarifyQues
       }
       return { question: q.question, answer: parts.join("、") };
     });
-    submitClarification({ tool, toolCallId, answers: responses });
+    onSubmit(responses);
   };
 
   return (
@@ -566,7 +610,7 @@ const ClarifyForm: FC<{ tool: string; toolCallId: string; questions: ClarifyQues
                   <button
                     key={c.id}
                     type="button"
-                    disabled={submitted}
+                    disabled={busy}
                     onClick={() => toggle(q, c.id)}
                     className={cn(
                       "flex items-start gap-2.5 rounded-lg border px-3 py-2 text-start text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60",
@@ -612,7 +656,7 @@ const ClarifyForm: FC<{ tool: string; toolCallId: string; questions: ClarifyQues
                   >
                     <button
                       type="button"
-                      disabled={submitted}
+                      disabled={busy}
                       onClick={() => toggleOther(q)}
                       className={cn(
                         "flex w-full items-start gap-2.5 rounded-lg px-3 py-2 text-start transition-colors disabled:cursor-not-allowed disabled:opacity-60",
@@ -649,13 +693,13 @@ const ClarifyForm: FC<{ tool: string; toolCallId: string; questions: ClarifyQues
                       <div className="pr-3 pb-2 pl-[2.375rem]">
                         <Input
                           autoFocus
-                          disabled={submitted}
+                          disabled={busy}
                           value={otherText[q.id] ?? ""}
                           onChange={(e) =>
                             setOtherText((prev) => ({ ...prev, [q.id]: e.target.value }))
                           }
                           onKeyDown={(e) => {
-                            if (e.key === "Enter" && allAnswered && !submitted && !isRunning) {
+                            if (e.key === "Enter" && allAnswered && !busy) {
                               e.preventDefault();
                               submit();
                             }
@@ -672,8 +716,8 @@ const ClarifyForm: FC<{ tool: string; toolCallId: string; questions: ClarifyQues
           </div>
         );
       })}
-      <Button size="sm" disabled={!allAnswered || submitted || isRunning} onClick={submit}>
-        {submitted ? "已提交" : "确认选择"}
+      <Button size="sm" disabled={!allAnswered || busy} onClick={submit}>
+        {busy ? "提交中…" : "确认选择"}
       </Button>
     </div>
   );
@@ -695,6 +739,50 @@ const ClarifyAnswerSummary: FC<{ answers: ClarifyAnswerEntry[] }> = ({ answers }
         </span>
       ))}
     </div>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* Workflow-suspend clarification (native suspend/resume)               */
+/* ------------------------------------------------------------------ */
+
+export type SuspendedClarify = { runId: string; questions: ClarifyQuestion[] };
+
+type WorkflowDataPart = {
+  type?: string;
+  id?: string;
+  data?: {
+    status?: string;
+    steps?: Record<string, { suspendPayload?: { questions?: ClarifyQuestion[] } } | undefined>;
+  };
+};
+
+/**
+ * Reads a pending clarification out of a `data-workflow` UI part when the SQL
+ * workflow is suspended on the clarify step. The part id is the workflow run id
+ * the form resumes with; the questions ride the step's suspend payload.
+ */
+export const getSuspendedClarify = (part: unknown): SuspendedClarify | null => {
+  const p = part as WorkflowDataPart;
+  if (p?.type !== "data-workflow" || p.data?.status !== "suspended" || !p.id) return null;
+  for (const step of Object.values(p.data.steps ?? {})) {
+    const questions = step?.suspendPayload?.questions;
+    if (Array.isArray(questions) && questions.length > 0) return { runId: p.id, questions };
+  }
+  return null;
+};
+
+/** The clarify form for a suspended workflow run; resumes the run on submit. */
+export const WorkflowClarifyForm: FC<{ runId: string; questions: ClarifyQuestion[] }> = ({
+  runId,
+  questions,
+}) => {
+  const { resumeClarification } = useChatActions();
+  return (
+    <ClarifyForm
+      questions={questions}
+      onSubmit={(answers) => resumeClarification({ runId, answers })}
+    />
   );
 };
 

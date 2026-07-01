@@ -12,14 +12,10 @@ export type ChatActions = {
   /** Sends a new user message into the current thread. */
   sendMessage: (text: string) => void;
   /**
-   * Supplies the clarify form's choices as the pending clarify-request tool
-   * result, resuming the same assistant turn so the agent can write the SQL.
+   * Resumes a suspended SQL workflow run with the user's clarification choices,
+   * continuing the same logical turn server-side.
    */
-  submitClarification: (args: {
-    tool: string;
-    toolCallId: string;
-    answers: ClarifyAnswer[];
-  }) => void;
+  resumeClarification: (args: { runId: string; answers: ClarifyAnswer[] }) => void;
   /** True while the assistant is streaming a response. */
   isRunning: boolean;
 };

@@ -35,7 +35,8 @@ import {
 import {
   ClarifyExchange,
   ToolPart,
-  isClarifyAskPart,
+  WorkflowClarifyForm,
+  getSuspendedClarify,
   isClarifyToolPart,
 } from "@/components/assistant-ui/sql-tools";
 import { ChatActionsProvider } from "@/components/assistant-ui/chat-context";
@@ -83,7 +84,7 @@ const ThreadView: FC<{ threadId: Id<"threads">; seed: UIMessage[] }> = ({ thread
   // Persistence is handled by the registry (on finish/error), not here.
   const [chat] = useState(() => getChat(threadId, seed));
 
-  const { messages, sendMessage, regenerate, stop, status, error, addToolResult } = useChat({
+  const { messages, sendMessage, regenerate, stop, status, error } = useChat({
     chat,
     experimental_throttle: 50,
   });
@@ -112,27 +113,38 @@ const ThreadView: FC<{ threadId: Id<"threads">; seed: UIMessage[] }> = ({ thread
     [sendMessage, titleFromFirstMessage, threadId],
   );
 
-  const submitClarification = useCallback(
-    (args: { tool: string; toolCallId: string; answers: { question: string; answer: string }[] }) =>
-      addToolResult({
-        tool: args.tool,
-        toolCallId: args.toolCallId,
-        output: { answers: args.answers },
-      }),
-    [addToolResult],
+  // Resume the suspended SQL workflow with the user's clarification choices. The
+  // answer renders as a user turn; the server ignores chat history on resume and
+  // continues the run from its Postgres snapshot (see chat-registry transport).
+  const resumeClarification = useCallback(
+    (args: { runId: string; answers: { question: string; answer: string }[] }) => {
+      const summary = args.answers
+        .map((a) => a.answer)
+        .filter(Boolean)
+        .join("；");
+      sendMessage({ text: summary || "（已确认）" }, { body: { resume: args } });
+    },
+    [sendMessage],
   );
 
-  // Pause: the last assistant turn is an unanswered clarification ask.
+  // Pause: the last assistant turn is a suspended workflow awaiting clarification.
   const last = messages[messages.length - 1];
   const awaitingClarify = Boolean(
-    last?.role === "assistant" && last.parts.some((p) => isToolUIPart(p) && isClarifyAskPart(p)),
+    last?.role === "assistant" && last.parts.some((p) => getSuspendedClarify(p) !== null),
   );
 
   const isEmpty = messages.length === 0;
+  // The most recent assistant message. A suspended clarify form renders there even
+  // after the answer's user turn is appended, so a failed resume stays retryable —
+  // the form reappears whenever no assistant response followed the suspend.
+  const lastAssistantIndex = messages.reduce(
+    (acc, message, idx) => (message.role === "assistant" ? idx : acc),
+    -1,
+  );
   const { scrollRef, onScroll, atBottom, scrollToBottom } = useAutoScroll(messages);
 
   return (
-    <ChatActionsProvider value={{ sendMessage: send, submitClarification, isRunning }}>
+    <ChatActionsProvider value={{ sendMessage: send, resumeClarification, isRunning }}>
       <div
         className="aui-thread-root bg-background @container flex h-full flex-col"
         style={{
@@ -161,6 +173,7 @@ const ThreadView: FC<{ threadId: Id<"threads">; seed: UIMessage[] }> = ({ thread
                   key={message.id}
                   message={message}
                   running={isRunning && isLast}
+                  isLastAssistant={i === lastAssistantIndex}
                   showActionBar={!(isLast && isRunning)}
                   regenerate={regenerate}
                 />
@@ -456,6 +469,7 @@ const UserMessage = memo(UserMessageImpl);
 type AssistantMessageProps = {
   message: UIMessage;
   running: boolean;
+  isLastAssistant: boolean;
   showActionBar: boolean;
   regenerate: (options?: { messageId?: string }) => void;
 };
@@ -463,10 +477,39 @@ type AssistantMessageProps = {
 const AssistantMessageImpl: FC<AssistantMessageProps> = ({
   message,
   running,
+  isLastAssistant,
   showActionBar,
   regenerate,
 }) => {
   const parts = message.parts;
+
+  // Clarification forms. New flow: a suspended `data-workflow` part renders the
+  // interactive form while this is the latest assistant message — so it shows
+  // when pending and reappears for retry if a resume failed (its user turn is
+  // appended but no assistant response followed), yet hides once a resume turn
+  // streams. Legacy: threads persisted before the workflow migration still carry
+  // a clarify-request tool part, rendered read-only so old history keeps showing.
+  const clarifyForms: ReactNode[] = [];
+  let hasActiveClarify = false;
+  parts.forEach((p, i) => {
+    const suspended = getSuspendedClarify(p);
+    if (suspended) {
+      if (isLastAssistant) {
+        hasActiveClarify = true;
+        clarifyForms.push(
+          <WorkflowClarifyForm
+            key={`clarify-${i}`}
+            runId={suspended.runId}
+            questions={suspended.questions}
+          />,
+        );
+      }
+      return;
+    }
+    if (isToolUIPart(p) && isClarifyToolPart(p)) {
+      clarifyForms.push(<ClarifyExchange key={`clarify-${i}`} part={p} />);
+    }
+  });
 
   // Last reasoning / non-clarify tool part: everything up to here is "thinking".
   let lastThinkingIndex = -1;
@@ -478,41 +521,21 @@ const AssistantMessageImpl: FC<AssistantMessageProps> = ({
     }
   }
 
-  // Index of the clarify form (last clarify part, if any). Narration emitted
-  // before it is the model's pre-clarify rambling and is dropped in both the
-  // asking and answered phases; -1 on a normal turn disables the suppression.
-  let clarifyIndex = -1;
-  for (let i = parts.length - 1; i >= 0; i--) {
-    const p = parts[i];
-    if (isToolUIPart(p) && isClarifyToolPart(p)) {
-      clarifyIndex = i;
-      break;
-    }
-  }
-
   const groupChildren: ReactNode[] = [];
-  const clarifyForms: ReactNode[] = [];
   const answer: ReactNode[] = [];
   let toolCount = 0;
 
   parts.forEach((p, i) => {
     if (isToolUIPart(p)) {
-      if (isClarifyToolPart(p)) {
-        // Clarify is pulled out of the chain of thought and rendered as its own
-        // form/summary. ClarifyExchange picks the right phase from the tool state
-        // (drafting spinner → choice form → answered recap), so this is safe on
-        // any message, including after a reload.
-        clarifyForms.push(<ClarifyExchange key={i} part={p} />);
-        return;
-      }
+      if (isClarifyToolPart(p)) return; // rendered above as a legacy exchange
       toolCount++;
       groupChildren.push(<ToolPart key={i} part={p} />);
       return;
     }
-    // Suppress reasoning/text before the clarify form (the interactive form is
-    // the point of the turn) — only the discovery tool cards stay in the chain
-    // of thought. Post-clarify thinking and the final answer still render.
-    if (p.type === "reasoning" && i <= lastThinkingIndex && i > clarifyIndex) {
+    // On a suspend turn the form is the point — drop the model's prose; only the
+    // grounding tool cards stay in the chain of thought.
+    if (hasActiveClarify) return;
+    if (p.type === "reasoning" && i <= lastThinkingIndex) {
       groupChildren.push(
         <ChainOfThoughtReasoning key={i}>
           <MarkdownText>{p.text}</MarkdownText>
@@ -520,7 +543,7 @@ const AssistantMessageImpl: FC<AssistantMessageProps> = ({
       );
       return;
     }
-    if (p.type === "text" && i > clarifyIndex) {
+    if (p.type === "text") {
       if (i <= lastThinkingIndex) {
         groupChildren.push(
           <ChainOfThoughtText key={i}>

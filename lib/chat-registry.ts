@@ -1,9 +1,5 @@
 import { Chat } from "@ai-sdk/react";
-import {
-  DefaultChatTransport,
-  lastAssistantMessageIsCompleteWithToolCalls,
-  type UIMessage,
-} from "ai";
+import { DefaultChatTransport, type UIMessage } from "ai";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { clearThreadStatus, setSaveFailed, setThreadStatus } from "@/lib/chat-status";
@@ -26,16 +22,28 @@ import { convex } from "@/lib/convex";
 // across midnight.
 const transport = new DefaultChatTransport({
   api: "/api/chat",
-  prepareSendMessagesRequest: ({ id, messages, trigger, messageId, body }) => ({
-    body: {
-      ...body,
-      id,
-      messages,
-      trigger,
-      messageId,
-      currentDate: new Date().toLocaleDateString("en-CA"),
-    },
-  }),
+  prepareSendMessagesRequest: ({ id, messages, trigger, body }) => {
+    const currentDate = new Date().toLocaleDateString("en-CA");
+
+    // Resuming a suspended clarify run: the body carries the run id + answers
+    // (see Thread.resumeClarification). Send only those — the server continues
+    // from the workflow snapshot and ignores chat history on resume.
+    const resume = (
+      body as
+        | { resume?: { runId: string; answers: { question: string; answer: string }[] } }
+        | undefined
+    )?.resume;
+    if (resume) {
+      return {
+        body: { id, runId: resume.runId, resumeData: { answers: resume.answers }, currentDate },
+      };
+    }
+
+    // Fresh turn: the workflow takes the chat history as inputData.
+    return {
+      body: { id, inputData: { messages, trigger }, currentDate },
+    };
+  },
 });
 
 const chats = new Map<string, Chat<UIMessage>>();
@@ -78,9 +86,6 @@ export function getChat(threadId: Id<"threads">, seedMessages: UIMessage[] = [])
     id: threadId,
     messages: seedMessages,
     transport,
-    // After the clarify form supplies its tool result, resume the same turn so
-    // the agent can write the SQL — no extra user message.
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
     onFinish: () => {
       persist(threadId, chat.messages);
       setThreadStatus(threadId, "ready");

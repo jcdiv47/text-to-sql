@@ -102,7 +102,7 @@ const clarifyInputSchema = z.object({
     .describe("Relevant conversation context that helps draft the choices."),
 });
 
-type ClarifyInput = z.infer<typeof clarifyInputSchema>;
+export type ClarifyInput = z.infer<typeof clarifyInputSchema>;
 
 // The user's resolved choices, supplied by the form as the tool result (via the
 // AI SDK addToolResult), so the agent sees them and can write the final SQL.
@@ -140,7 +140,7 @@ export const clarifyRequest = createTool({
 // Shapes the questions for the form. Never throws: the display transform
 // substitutes a generic "payload unavailable" placeholder on error, so we catch
 // and fall back to a usable question instead.
-const generateClarification = async (
+export const generateClarification = async (
   input: ClarifyInput,
 ): Promise<{ questions: ClarificationOutput["questions"] }> => {
   // Fast path: the model already drafted usable questions (its normal behavior

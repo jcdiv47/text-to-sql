@@ -1,4 +1,4 @@
-import { handleChatStream } from "@mastra/ai-sdk";
+import { handleWorkflowStream } from "@mastra/ai-sdk";
 import { RequestContext } from "@mastra/core/request-context";
 import { auth } from "@clerk/nextjs/server";
 import { createUIMessageStreamResponse } from "ai";
@@ -62,38 +62,49 @@ export async function POST(req: Request) {
   // fall back to a server-side UTC date if it's missing (e.g. older clients).
   const currentDate = getStringValue(params.currentDate) ?? new Date().toISOString().slice(0, 10);
 
-  // Pick the most relevant predefined business knowledge for this question and
-  // inject it for the SQL agent to read (see sql-agent instructions). Runs before
-  // the stream starts and degrades to no knowledge on any failure.
-  const businessKnowledge = await selectBusinessKnowledge({
-    question: getLatestUserQuestion(params.messages),
-    userId,
-    sessionId,
-    signal: req.signal,
-  });
+  // A resume continues a suspended clarify run from its Postgres snapshot; a
+  // fresh turn starts the workflow over the chat history (carried in inputData).
+  const runId = getStringValue(params.runId);
+  const isResume = Boolean(runId && params.resumeData);
+  const messages = params.inputData?.messages ?? params.messages;
+
+  // Knowledge selection only needs to run for a fresh turn — a resume already has
+  // the grounding from its original turn (re-applied from the workflow snapshot).
+  const businessKnowledge = isResume
+    ? ""
+    : await selectBusinessKnowledge({
+        question: getLatestUserQuestion(messages),
+        userId,
+        sessionId,
+        signal: req.signal,
+      });
 
   const requestContext = new RequestContext();
   requestContext.set("currentDate", currentDate);
   requestContext.set("businessKnowledge", businessKnowledge);
 
+  const tracingOptions = {
+    ...params.tracingOptions,
+    metadata: {
+      ...params.tracingOptions?.metadata,
+      userId,
+      ...(sessionId ? { sessionId } : {}),
+    },
+  };
+
   try {
-    const stream = await handleChatStream({
+    const stream = await handleWorkflowStream({
       mastra,
-      agentId: "sql-agent",
-      params: {
-        ...params,
-        requestContext,
-        tracingOptions: {
-          ...params.tracingOptions,
-          metadata: {
-            ...params.tracingOptions?.metadata,
-            userId,
-            ...(sessionId ? { sessionId } : {}),
-          },
-        },
-      },
+      workflowId: "sql-workflow",
       version: "v6",
       sendReasoning: true,
+      params: isResume
+        ? { runId, resumeData: params.resumeData, requestContext, tracingOptions }
+        : {
+            inputData: { messages, trigger: params.inputData?.trigger ?? params.trigger },
+            requestContext,
+            tracingOptions,
+          },
     });
 
     return createUIMessageStreamResponse({ stream });
