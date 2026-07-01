@@ -13,12 +13,14 @@ Provide a multi-thread chat UI with server-side per-user persistence, streaming 
 - `app/assistant.tsx`
 - `components/assistant-ui/thread.tsx`
 - `components/assistant-ui/thread-list.tsx`
+- `components/assistant-ui/thread-search.tsx`
 - `components/assistant-ui/threadlist-sidebar.tsx`
 - `components/assistant-ui/chat-context.tsx`
 - `components/convex-client-provider.tsx`
 - `convex/schema.ts`
 - `convex/threads.ts`
 - `convex/messages.ts`
+- `convex/extract.ts`
 - `convex/auth.config.ts`
 - `lib/chat-registry.ts`
 - `lib/chat-status.ts`
@@ -62,7 +64,7 @@ type Message = {
 Thread operations:
 
 - `threads.list()` returns the caller's threads, sorted pinned-first then most-recently updated.
-- `threads.browse({ search })` returns the caller's threads filtered by Convex full-text search over message prose and generated SQL.
+- `threads.browse({ search })` returns the caller's threads filtered by Convex full-text search over message prose and generated SQL. The query is bigram-tokenized (see `convex/extract.ts`) so Chinese substrings match, and each result carries a highlight snippet (`before`/`match`/`after`) taken from the best-ranked matching message when the raw query occurs literally.
 - `threads.create()` creates an empty thread and returns its id.
 - `threads.rename({ threadId, title })` trims and stores a non-empty title.
 - `threads.togglePin({ threadId })` toggles pinned state.
@@ -73,13 +75,14 @@ Message operations:
 
 - `messages.list({ threadId })` returns the caller's message JSON strings in conversation order, or `[]` if the thread is absent/not owned.
 - `messages.replace({ threadId, messages })` reconciles the full serialized `UIMessage[]`: upsert by stable message id, update order/search text, delete rows no longer present, and patch `updatedAt`.
+- `messages.reindexSearchText()` is an internal one-time migration (paginated) that recomputes every message's `searchText` with the current tokenizer. Run via `npx convex run messages:reindexSearchText` after deploying a tokenizer change; `internal` blocks client calls but not the admin CLI.
 
 Current details:
 
 - Default title is `新对话`.
 - Empty/default-titled threads that are not currently streaming are reused by the new-thread button to avoid piling up blank sessions.
 - AI SDK messages are stored as JSON strings because tool outputs can include non-ASCII SQL result column names, which Convex object field names cannot safely carry.
-- `searchText` is extracted from message text and `execute-sql` query inputs so sidebar search can find threads by question, answer, or generated SQL.
+- `searchText` is extracted (`convex/extract.ts`) from message text and `execute-sql` query inputs — for user and assistant messages alike — so search can find threads by question, answer, or generated SQL. CJK runs are indexed as overlapping bigrams (plus each run's final character as a unigram, so single-character queries match) because Convex's tokenizer only splits on whitespace/punctuation and prefix-matches the last term; queries get the same bigram transform (without the trailing unigram).
 - Message replacement is last-writer-wins for the whole thread; live cross-tab merge/conflict resolution is not implemented.
 
 ## Assistant shell behavior
@@ -91,13 +94,22 @@ Current details:
 - Keeps the selected thread in `useCurrentThread`, a non-persisted in-memory store.
 - If the current selection is missing, selects the first listed thread (pinned-first, then most recent) or creates one if the user has none.
 - Renders a blank sidebar-colored placeholder until Convex auth, the thread list, and a valid current thread are ready.
-- Renders `ThreadListSidebar`, header, disabled share button, thread title, and Clerk `UserButton`.
+- Renders `ThreadListSidebar`, header, disabled share button, thread title, and Clerk `UserButton`. The header's sidebar-collapse toggle appears only when the sidebar is collapsed (or on mobile), since the open sidebar carries its own toggle in its header.
+
+`components/assistant-ui/threadlist-sidebar.tsx`:
+
+- Renders the sidebar header: a `Text-to-SQL` brand label on the left, with the search-modal trigger and the sidebar collapse toggle on the right.
 
 `components/assistant-ui/thread-list.tsx`:
 
-- Uses `api.threads.list` for the unfiltered list and `api.threads.browse` for search results.
-- Provides a search field, no-results state, pinned indicators, live streaming spinner, and menu actions for pin/unpin, rename, and delete.
+- Renders from `api.threads.list` only, grouped into collapsible `置顶会话` / `最近会话` sections (pinned threads vs. the rest); a section's chevron shows on hover when expanded and stays visible when collapsed.
+- Provides a borderless new-thread button, a live streaming spinner, and per-row menu actions for pin/unpin, rename, and delete — the menu button is revealed only on hover of that specific row (scoped group).
 - On delete, disposes the live browser chat for that thread, clears the selected id if needed, and calls `threads.remove`.
+
+`components/assistant-ui/thread-search.tsx`:
+
+- A top-anchored, centered modal (opened from the header icon or ⌘K/Ctrl+K) that searches `api.threads.browse`. The panel grows downward only, so its top edge stays put as results change.
+- Each result shows a chat icon, the thread title, a relative-date label (今天/昨天/过去一周/过去一个月/更早), and — when the query occurs literally in a message — a highlighted match snippet.
 
 ## Thread runtime behavior
 
@@ -123,8 +135,8 @@ Supported interactions:
 - Auto-scroll while near the bottom.
 - Scroll-to-bottom button when user has scrolled away.
 - Starter suggestion chips grouped by 表结构 / 写查询 / 做分析 / 探索数据.
-- Sidebar search across message prose and generated SQL.
-- Thread pin/unpin, rename, and delete.
+- Sidebar search (header icon or ⌘K) across message prose and generated SQL, in a centered modal with highlighted match snippets; Chinese substrings match via bigram tokenization.
+- Collapsible pinned/recent thread sections; thread pin/unpin, rename, and delete.
 
 ## Clarification gating
 
@@ -155,12 +167,13 @@ On submit the form calls `resumeClarification` (bridged through `ChatActionsProv
 - There is no Assistant Cloud persistence, Mastra memory adapter, or sharing in the current code path.
 - The share button is rendered but disabled.
 - Message persistence happens when a turn settles; a hard browser/process crash mid-stream can lose the in-progress response.
+- Search matches bigram-tokenized `searchText`. After deploying a tokenizer change, existing rows must be re-indexed via `messages.reindexSearchText` before older threads match. Convex full-text search is relevance-ranked and permissive, so multi-character Chinese queries recall broadly rather than as exact substrings.
 
 ## Manual verification
 
 - Create two threads; switch between them; refresh; both remain for the same user.
 - Sign out/sign in as another Clerk user on the same browser; previous user's threads do not flash or appear.
-- Search for text from a previous question/answer or generated SQL; matching threads appear.
+- Open search (header icon or ⌘K); type text from a previous question/answer or generated SQL; matching threads appear with a highlighted snippet. A Chinese substring from mid-sentence (e.g. a word inside an assistant reply) matches after the one-time `messages:reindexSearchText` backfill.
 - Pin and rename a thread; refresh; the pinned/title state remains.
 - Delete the active thread; the next available thread becomes active or a new thread is created if none remain.
 - Start generation; stop button appears; stop cancels generation.
