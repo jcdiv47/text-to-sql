@@ -8,7 +8,7 @@ import { api } from "@/convex/_generated/api";
 import { Thread } from "@/components/assistant-ui/thread";
 import { ThreadListSidebar } from "@/components/assistant-ui/threadlist-sidebar";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
-import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { SidebarInset, SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import { DEFAULT_THREAD_TITLE } from "@/lib/chat-constants";
 import { useCurrentThread } from "@/lib/current-thread";
 
@@ -25,9 +25,14 @@ const ThreadTitle: FC = () => {
 };
 
 const Header: FC = () => {
+  // The sidebar header owns the collapse toggle while it's open; only surface a
+  // trigger here once the sidebar is gone (collapsed, or off-canvas on mobile),
+  // so the two never duplicate.
+  const { isMobile, state } = useSidebar();
+
   return (
     <header className="flex h-12 shrink-0 items-center gap-2 px-4">
-      <SidebarTrigger className="size-8 shrink-0" />
+      {(isMobile || state === "collapsed") && <SidebarTrigger className="size-8 shrink-0" />}
       <ThreadTitle />
       <div className="ml-auto flex items-center gap-2">
         <TooltipIconButton

@@ -1,35 +1,26 @@
 import type * as React from "react";
-import { MessagesSquare } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
   SidebarHeader,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
   SidebarRail,
+  SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { ThreadList } from "@/components/assistant-ui/thread-list";
+import { ThreadSearch } from "@/components/assistant-ui/thread-search";
 
 export function ThreadListSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   return (
     <Sidebar {...props}>
-      <SidebarHeader className="aui-sidebar-header mb-2 border-b">
+      <SidebarHeader className="aui-sidebar-header px-3 pt-3 pb-4">
         <div className="aui-sidebar-header-content flex items-center justify-between">
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton size="lg" asChild>
-                <div>
-                  <div className="aui-sidebar-header-icon-wrapper bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg">
-                    <MessagesSquare className="aui-sidebar-header-icon size-4" />
-                  </div>
-                  <div className="aui-sidebar-header-heading me-6 flex flex-col gap-0.5 leading-none">
-                    <span className="aui-sidebar-header-title font-semibold">会话列表</span>
-                  </div>
-                </div>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
+          <span className="aui-sidebar-header-title text-lg font-semibold tracking-tight">
+            Text-to-SQL
+          </span>
+          <div className="aui-sidebar-header-actions flex items-center gap-0.5">
+            <ThreadSearch />
+            <SidebarTrigger className="size-8" />
+          </div>
         </div>
       </SidebarHeader>
       <SidebarContent className="aui-sidebar-content px-2">
