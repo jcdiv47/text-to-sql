@@ -38,8 +38,8 @@ conventions, and data gotchas.
   │     └─ on error → [] (global invariants still cover safety)
   ├─ map ids → full item bodies → render markdown block
   ├─ requestContext.set("businessKnowledge", renderedBlock)   // like currentDate
-  └─ handleChatStream({ agentId: "sql-agent", requestContext, … })
-        └─ sql-agent.instructions(requestContext) renders, in order:
+  └─ handleWorkflowStream({ workflowId: "sql-workflow", requestContext, … })
+        └─ run-sql-agent → sql-agent.instructions(requestContext) renders, in order:
               · global invariants (static)                     ← always
               · "## 相关业务知识" + injected selected items     ← from context
 ```
@@ -116,14 +116,17 @@ Rejected for v1 as a needless second injection channel.)
 3. `requestContext.set("businessKnowledge", renderedBlock)` alongside the
    existing `currentDate`.
 4. Attach `userId`/`sessionId` to the selector call's tracing metadata, matching
-   `handleChatStream`'s metadata, so the selection span nests under the request.
+   `handleWorkflowStream`'s metadata, so the selection span nests under the request.
 
-**Re-inject every turn (correctness, not an optimization choice).** Instructions
-are recomputed per request and are _not_ part of message history, so the selected
-knowledge must be re-injected on every turn — including clarify-resume and
-regenerate. Skipping selection on resume would drop the knowledge mid-flow. v1
-therefore runs the selector each turn; see future work for a client-cache
-optimization that avoids the repeat call without dropping the injection.
+**Keep the knowledge present across the whole turn.** Instructions are recomputed
+per request and are _not_ part of message history, so the selected knowledge must
+be present whenever the SQL agent runs — including after a clarify resume. On a
+**fresh** turn the route runs the selector and injects the block. On **resume**
+the route skips selection (`isResume ? "" : …`); instead the `run-sql-agent`
+workflow step stashes the selected `businessKnowledge` in step **state** at
+suspend and re-applies it to `requestContext` on resume, so the resumed turn keeps
+the exact grounding of the original turn without a repeat selector call.
+Regenerate re-runs the whole turn, so it re-selects normally.
 
 ## SQL agent integration (`mastra/agents/sql-agent.ts`)
 

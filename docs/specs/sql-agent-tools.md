@@ -14,6 +14,7 @@ Convert user questions into safe PostgreSQL `SELECT` queries against the configu
 - `mastra/tools/introspect-database.ts`
 - `mastra/tools/execute-sql.ts`
 - `mastra/tools/report-data-gap.ts`
+- `mastra/tools/finalize-sql-answer.ts`
 - `mastra/tools/postgres.ts`
 - `mastra/index.ts`
 
@@ -34,10 +35,11 @@ Convert user questions into safe PostgreSQL `SELECT` queries against the configu
   - `introspect-database`
   - `execute-sql`
   - `report-data-gap`
+  - `finalize-sql-answer`
 
 Instructions are a function of `requestContext`: the app injects `currentDate` (the user's local date as `YYYY-MM-DD`) so the agent can resolve relative time ranges (falling back to `unknown` when absent), and `businessKnowledge` — a per-question block of selected business knowledge rendered under `## 相关业务知识` (empty when none was selected). See [Business knowledge selection](./business-knowledge-selection.md).
 
-There is no `stopWhen` condition. The clarify turn ends naturally because `clarify-request` has **no `execute`** (a client-side human-in-the-loop tool): the model's call parks in `input-available` with the turn pending until the form supplies the tool result, which then resumes the same turn. See [Clarification flow](./clarification-flow.md).
+Two tools have **no `execute`**, so the agent turn ends with the call pending: `clarify-request` (bridged to a workflow **suspend** — see [Clarification flow](./clarification-flow.md)) and `finalize-sql-answer` (the terminal handoff to the answer agent — see [`finalize-sql-answer` tool](#finalize-sql-answer-tool) and [Answer agent](./answer-agent.md)). There is no `stopWhen` condition; the `run-sql-agent` workflow step captures both pending calls from the stream and acts on them.
 
 `report-data-gap`, by contrast, **has an `execute`** (a passthrough that echoes the gap) so it does **not** pause the turn: the model records the gap, the tool returns immediately, and the same turn continues so the agent can answer the closest supportable question. It exists to give the model a first-class action for "this can't be answered from the database" — countering the trained bias to push every request to a (possibly fabricated) answer — and to emit an observable signal for refusal-rate evals.
 
@@ -52,11 +54,11 @@ The agent instructions require it to:
 5. Treat a free-text clarification reply (surfaced as `其他：<text>` when the user picks the "Other" option) as authoritative and re-run discovery/introspection — or clarify again — before writing SQL.
 6. Generate only PostgreSQL-compatible read-only `SELECT` queries. They may start with `WITH` when using CTEs, but the final statement must still be `SELECT`.
 7. Call `execute-sql` with the final query.
-8. Show the generated SQL in the final answer.
-9. Present tabular data as markdown tables when appropriate.
-10. Explain likely reasons when a query returns no results.
-11. Call `report-data-gap` (with `category`, `requested`, `missing`, `evidence`) when the question or part of it cannot be answered from this database, only for gaps verified via introspection or an empty discovery query — never to dodge a hard but answerable query.
-12. After `report-data-gap` returns, answer the closest supportable question in the same turn when one exists, and state the limitation plainly and politely in Simplified Chinese in the final reply (not relying on the tool card alone).
+8. **Finalize instead of writing the reply:** call `finalize-sql-answer` once, as the terminal action, with a structured brief (`userMessageCategory`, `resultStatus`, the `question` answered, the `sql` run, `assumptions`, and any `dataGaps`). The result rows are attached automatically from the last `execute-sql` result, so it must not restate them, and it must write no prose before or after the call.
+9. Call `report-data-gap` (with `category`, `requested`, `missing`, `evidence`) when the question or part of it cannot be answered from this database, only for gaps verified via introspection or an empty discovery query — never to dodge a hard but answerable query.
+10. After `report-data-gap` returns, answer the closest supportable question in the same turn when one exists, then finalize with the shortfall recorded in `resultStatus`/`dataGaps` so the answer agent can state the limitation plainly.
+
+The user-facing presentation — leading with the conclusion, showing the SQL, rendering tabular results as markdown tables, explaining empty results, and acknowledging data gaps — is produced by the **answer agent** from the brief, not written by the SQL agent. See [Answer agent](./answer-agent.md).
 
 ## Business/domain knowledge
 
@@ -174,13 +176,46 @@ Behavior:
 - Has an `execute` (a passthrough that returns the echo), so it does **not** suspend the turn — the agent continues and answers the closest supportable question in the same turn.
 - Purpose: make "this can't be answered from the database" a first-class, structured action so the model surfaces capability gaps instead of fabricating an answer, and so refusals are observable in tracing.
 - Calibration guard: the agent is instructed to claim a gap only with evidence (an introspection finding or an empty discovery query), which keeps it from over-refusing answerable questions.
-- Rendered in the chat timeline as a dedicated "数据局限" chain-of-thought card (`components/assistant-ui/sql-tools.tsx`); the user-facing acknowledgment itself lives in the agent's final reply.
+- Rendered in the chat timeline as a dedicated "数据局限" chain-of-thought card (`components/assistant-ui/sql-tools.tsx`); the user-facing acknowledgment itself lives in the answer agent's final reply, driven by the `resultStatus`/`dataGaps` in the finalize brief.
+
+## `finalize-sql-answer` tool
+
+The terminal handoff from the SQL agent to the answer agent. Like `clarify-request` it has **no `execute`**: calling it ends the SQL agent's turn with the brief as the tool arguments, which the `run-sql-agent` workflow step captures (suppressing the call's chunks from the UI).
+
+Input schema (what the model authors):
+
+```ts
+{
+  userMessageCategory:
+    | "data_query" | "follow_up" | "clarification_reply"
+    | "business_definition" | "out_of_scope" | "smalltalk";
+  resultStatus: "answered" | "needs_clarification" | "data_gap" | "empty_result" | "error";
+  question: string;                 // the question actually answered, in the user's terms
+  sql?: string;                     // the final SELECT (omit when none was run)
+  assumptions: string[];            // interpretation choices (default [])
+  dataGaps: {                       // verified gaps (default [])
+    category: "schema_gap" | "data_gap" | "granularity_gap" | "out_of_scope";
+    requested: string;
+    missing: string;
+    evidence: string;
+    available?: string;
+  }[];
+}
+```
+
+Output schema: `{ acknowledged: true }` (nominal — with no `execute`, it is never produced at runtime).
+
+Behavior:
+
+- Deliberately omits `rows`/`rowCount`: the workflow captures them from the last `execute-sql` result and merges them into the brief (`buildAnswerInput`), so the model never has to transcribe — and possibly truncate or hallucinate — the data it just fetched.
+- `buildAnswerInput` is defensive and never throws: enum fields fall back (`.catch`) and missing fields default, so a partial/off-schema call still yields a usable brief.
+- The assembled brief (`AnswerInput` = the fields above plus `rows`/`rowCount`) is handed to the `run-answer-agent` step. See [Answer agent](./answer-agent.md).
 
 ## Acceptance criteria
 
-- A normal clear request causes schema introspection, SQL execution, and a final answer with SQL shown.
+- A normal clear request causes schema introspection, SQL execution, and a `finalize-sql-answer` handoff whose brief the answer agent renders (conclusion, table, SQL shown).
 - Ambiguous requests cause discovery queries and then a `clarify-request` tool call instead of guessed final SQL.
-- A request whose required concept maps to no schema element (or whose essential discovery query returns zero rows) causes a `report-data-gap` call, followed in the same turn by an honest Simplified-Chinese acknowledgment plus the closest answerable data, instead of a fabricated or substituted answer.
+- A request whose required concept maps to no schema element (or whose essential discovery query returns zero rows) causes a `report-data-gap` call plus a `data_gap` finalize brief, so the answer agent gives an honest Simplified-Chinese acknowledgment plus the closest answerable data, instead of a fabricated or substituted answer.
 - Dangerous SQL is rejected before execution.
 - Queries against non-configured schemas are rejected by the EXPLAIN schema guard.
 - Database clients are closed on both success and failure.

@@ -128,14 +128,14 @@ Supported interactions:
 
 ## Clarification gating
 
-If the latest assistant message contains a `clarify-request` tool part still in `input-available` — an unanswered ask, since clarify is a no-`execute` client tool that parks pending until the form supplies its result:
+If the latest assistant message is a suspended SQL workflow awaiting clarification — a `data-workflow` part with `status: "suspended"`, detected by `getSuspendedClarify`:
 
 - The composer is disabled (`awaitingClarify`).
 - The composer placeholder says `请先在上方完成选择…`.
 - A hint says `请先在上方完成选择`.
-- The user must submit the clarification form, which is rendered from the tool part's transformed `input.questions`.
+- The user must submit the clarification form, which is rendered by `WorkflowClarifyForm` from the suspended step's `suspendPayload.questions`.
 
-On submit the form calls `addToolResult` (via `submitClarification`, bridged through `ChatActionsProvider`) to supply the clarify-request tool result, which resumes the **same** assistant turn — it does not send a new user message. See [Clarification flow](./clarification-flow.md).
+On submit the form calls `resumeClarification` (bridged through `ChatActionsProvider`), which resumes the suspended workflow run with `{ runId, resumeData: { answers } }` and appends the user's choice as a **new user turn**; the final answer then streams as a new assistant turn. Threads persisted before this migration may still hold a `clarify-request` tool part, which renders read-only. See [Clarification flow](./clarification-flow.md).
 
 ## Requirements
 
